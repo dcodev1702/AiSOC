@@ -41,7 +41,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "postgres" {
 resource "azurerm_postgresql_flexible_server" "main" {
   name                = "${var.name_prefix}-pg"
   resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  location            = local.workload_location
 
   version  = var.postgres_version
   sku_name = var.postgres_sku
@@ -54,10 +54,10 @@ resource "azurerm_postgresql_flexible_server" "main" {
   administrator_login    = var.postgres_user
   administrator_password = random_password.postgres.result
 
-  # VNet integration → private only. public_network_access is implicitly
-  # disabled when delegated_subnet_id is set.
-  delegated_subnet_id = azurerm_subnet.postgres.id
-  private_dns_zone_id = azurerm_private_dns_zone.postgres.id
+  # VNet integration with public access explicitly disabled.
+  delegated_subnet_id           = azurerm_subnet.postgres.id
+  private_dns_zone_id           = azurerm_private_dns_zone.postgres.id
+  public_network_access_enabled = false
 
   tags = var.tags
 
@@ -82,4 +82,12 @@ resource "azurerm_postgresql_flexible_server_configuration" "require_ssl" {
   name      = "require_secure_transport"
   server_id = azurerm_postgresql_flexible_server.main.id
   value     = "ON"
+}
+
+# Azure Flexible Server requires extensions to be explicitly allow-listed
+# before a database owner can create them. Migration 001 installs both.
+resource "azurerm_postgresql_flexible_server_configuration" "extensions" {
+  name      = "azure.extensions"
+  server_id = azurerm_postgresql_flexible_server.main.id
+  value     = "uuid-ossp,pgcrypto"
 }

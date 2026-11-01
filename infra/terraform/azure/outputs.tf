@@ -41,16 +41,16 @@ output "postgres_admin_user" {
   value       = var.postgres_user
 }
 
-# ─── Azure Cache for Redis ───────────────────────────────────────────────────
+# ─── Azure Managed Redis ─────────────────────────────────────────────────────
 
 output "redis_hostname" {
-  description = "Private hostname of the Azure Cache for Redis instance."
-  value       = azurerm_redis_cache.main.hostname
+  description = "Private hostname of the Azure Managed Redis instance."
+  value       = azurerm_managed_redis.main.hostname
 }
 
 output "redis_ssl_port" {
-  description = "TLS port of the Azure Cache for Redis instance (non-SSL port is disabled)."
-  value       = azurerm_redis_cache.main.ssl_port
+  description = "TLS port of the Azure Managed Redis instance."
+  value       = azurerm_managed_redis.main.default_database[0].port
 }
 
 # ─── Container Registry ──────────────────────────────────────────────────────
@@ -62,19 +62,9 @@ output "container_registry_login_server" {
 
 # ─── Managed identities ──────────────────────────────────────────────────────
 
-output "identity_api_client_id" {
-  description = "Client ID of the API runtime managed identity."
-  value       = azurerm_user_assigned_identity.api.client_id
-}
-
-output "identity_web_client_id" {
-  description = "Client ID of the web runtime managed identity."
-  value       = azurerm_user_assigned_identity.web.client_id
-}
-
-output "identity_ingest_client_id" {
-  description = "Client ID of the ingest runtime managed identity."
-  value       = azurerm_user_assigned_identity.ingest.client_id
+output "identity_runtime_client_id" {
+  description = "Client ID of the shared API, web, and ingest runtime identity."
+  value       = azurerm_user_assigned_identity.runtime.client_id
 }
 
 # ─── Key Vault ───────────────────────────────────────────────────────────────

@@ -44,6 +44,28 @@ resource "random_password" "service_token" {
   special = false
 }
 
+resource "random_password" "jwt_secret" {
+  length  = 64
+  special = false
+}
+
+resource "random_password" "metrics_token" {
+  length  = 64
+  special = false
+}
+
+resource "random_password" "realtime_internal_token" {
+  length  = 64
+  special = false
+}
+
+resource "random_password" "postgres_app" {
+  length  = 32
+  special = true
+  # Keep the same server-compatible alphabet as the administrator password.
+  override_special = "!#$%&*()-_=+[]{}<>:?"
+}
+
 # ─── Key Vault ───────────────────────────────────────────────────────────────
 #
 # RBAC-authorization mode (no access policies). The deploying principal gets
@@ -61,7 +83,7 @@ resource "azurerm_key_vault" "main" {
   tenant_id           = data.azurerm_client_config.current.tenant_id
 
   sku_name                      = "standard"
-  enable_rbac_authorization     = true
+  rbac_authorization_enabled    = true
   purge_protection_enabled      = false
   soft_delete_retention_days    = 7
   public_network_access_enabled = true
@@ -90,7 +112,7 @@ resource "azurerm_role_assignment" "deployer_secrets_officer" {
 
 resource "azurerm_key_vault_secret" "postgres_password" {
   name         = "postgres-password"
-  value        = random_password.postgres.result
+  value        = random_password.postgres_app.result
   key_vault_id = azurerm_key_vault.main.id
   tags         = var.tags
 
@@ -126,17 +148,66 @@ resource "azurerm_key_vault_secret" "realtime_jwt_secret" {
 
 resource "azurerm_key_vault_secret" "redis_auth" {
   name         = "redis-auth"
-  value        = azurerm_redis_cache.main.primary_access_key
+  value        = azurerm_managed_redis.main.default_database[0].primary_access_key
   key_vault_id = azurerm_key_vault.main.id
   tags         = var.tags
 
   depends_on = [azurerm_role_assignment.deployer_secrets_officer]
 }
 
+resource "azurerm_key_vault_secret" "redis_url" {
+  name = "redis-url"
+  value = format(
+    "rediss://:%s@%s:%d/0",
+    urlencode(azurerm_managed_redis.main.default_database[0].primary_access_key),
+    azurerm_managed_redis.main.hostname,
+    azurerm_managed_redis.main.default_database[0].port,
+  )
+  key_vault_id = azurerm_key_vault.main.id
+  tags         = var.tags
+
+  depends_on = [azurerm_role_assignment.deployer_secrets_officer]
+}
+
+# The API validates that production DSNs explicitly request TLS and normalizes
+# libpq's sslmode for SQLAlchemy/asyncpg.
 resource "azurerm_key_vault_secret" "database_url" {
   name = "database-url"
   value = format(
-    "postgresql+asyncpg://%s:%s@%s:5432/%s?ssl=require",
+    "postgresql+asyncpg://%s:%s@%s:5432/%s?sslmode=require",
+    "aisoc_app",
+    urlencode(random_password.postgres_app.result),
+    azurerm_postgresql_flexible_server.main.fqdn,
+    var.postgres_db_name,
+  )
+  key_vault_id = azurerm_key_vault.main.id
+  tags         = var.tags
+
+  depends_on = [azurerm_role_assignment.deployer_secrets_officer]
+}
+
+# Connectors and actions include direct asyncpg callers that do not accept the
+# libpq-only sslmode query key. Azure still enforces encrypted transport at the
+# server through require_secure_transport=ON.
+resource "azurerm_key_vault_secret" "database_asyncpg_url" {
+  name = "database-asyncpg-url"
+  value = format(
+    "postgresql+asyncpg://%s:%s@%s:5432/%s",
+    "aisoc_app",
+    urlencode(random_password.postgres_app.result),
+    azurerm_postgresql_flexible_server.main.fqdn,
+    var.postgres_db_name,
+  )
+  key_vault_id = azurerm_key_vault.main.id
+  tags         = var.tags
+
+  depends_on = [azurerm_role_assignment.deployer_secrets_officer]
+}
+
+resource "azurerm_key_vault_secret" "database_migration_url" {
+  name = "database-migration-url"
+  value = format(
+    "postgresql+asyncpg://%s:%s@%s:5432/%s?sslmode=require",
     var.postgres_user,
     urlencode(random_password.postgres.result),
     azurerm_postgresql_flexible_server.main.fqdn,
@@ -151,6 +222,33 @@ resource "azurerm_key_vault_secret" "database_url" {
 resource "azurerm_key_vault_secret" "service_token" {
   name         = "service-token"
   value        = random_password.service_token.result
+  key_vault_id = azurerm_key_vault.main.id
+  tags         = var.tags
+
+  depends_on = [azurerm_role_assignment.deployer_secrets_officer]
+}
+
+resource "azurerm_key_vault_secret" "jwt_secret" {
+  name         = "jwt-secret"
+  value        = random_password.jwt_secret.result
+  key_vault_id = azurerm_key_vault.main.id
+  tags         = var.tags
+
+  depends_on = [azurerm_role_assignment.deployer_secrets_officer]
+}
+
+resource "azurerm_key_vault_secret" "metrics_token" {
+  name         = "metrics-token"
+  value        = random_password.metrics_token.result
+  key_vault_id = azurerm_key_vault.main.id
+  tags         = var.tags
+
+  depends_on = [azurerm_role_assignment.deployer_secrets_officer]
+}
+
+resource "azurerm_key_vault_secret" "realtime_internal_token" {
+  name         = "realtime-internal-token"
+  value        = random_password.realtime_internal_token.result
   key_vault_id = azurerm_key_vault.main.id
   tags         = var.tags
 

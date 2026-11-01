@@ -24,9 +24,9 @@ locals {
   # unlike Cloud SQL there's no unix socket, so the app dials host:5432 w/ TLS.
   postgres_host = azurerm_postgresql_flexible_server.main.fqdn
 
-  # Azure Cache for Redis with the non-SSL port disabled is TLS-only on 6380.
-  redis_host = azurerm_redis_cache.main.hostname
-  redis_port = azurerm_redis_cache.main.ssl_port
+  # Azure Managed Redis uses an encrypted endpoint (currently port 10000).
+  redis_host = azurerm_managed_redis.main.hostname
+  redis_port = azurerm_managed_redis.main.default_database[0].port
 }
 
 # ─── API ─────────────────────────────────────────────────────────────────────
@@ -36,58 +36,89 @@ resource "azurerm_container_app" "api" {
   container_app_environment_id = azurerm_container_app_environment.main.id
   resource_group_name          = azurerm_resource_group.main.name
   revision_mode                = "Single"
+  workload_profile_name        = "Consumption"
   tags                         = var.tags
 
   identity {
     type         = "UserAssigned"
-    identity_ids = [azurerm_user_assigned_identity.api.id]
+    identity_ids = [azurerm_user_assigned_identity.runtime.id]
   }
 
   registry {
     server   = azurerm_container_registry.main.login_server
-    identity = azurerm_user_assigned_identity.api.id
+    identity = azurerm_user_assigned_identity.runtime.id
   }
 
   # ── Key Vault-backed secrets ───────────────────────────────────────────────
   secret {
+    name                = "database-url"
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.database_url.versionless_id
+  }
+  secret {
+    name                = "database-migration-url"
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.database_migration_url.versionless_id
+  }
+  secret {
     name                = "postgres-password"
-    identity            = azurerm_user_assigned_identity.api.id
-    key_vault_secret_id = azurerm_key_vault_secret.postgres_password.id
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.postgres_password.versionless_id
   }
   secret {
     name                = "secret-key"
-    identity            = azurerm_user_assigned_identity.api.id
-    key_vault_secret_id = azurerm_key_vault_secret.secret_key.id
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.secret_key.versionless_id
   }
   secret {
     name                = "credential-key"
-    identity            = azurerm_user_assigned_identity.api.id
-    key_vault_secret_id = azurerm_key_vault_secret.credential_key.id
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.credential_key.versionless_id
   }
   # Shared HS256 secret the API uses to mint realtime WS/SSE tickets (Issue
   # #239). The Node realtime workload (an always-on Container App / AKS in the
   # follow-up plan) reads the same Key Vault entry to verify them.
   secret {
     name                = "realtime-jwt-secret"
-    identity            = azurerm_user_assigned_identity.api.id
-    key_vault_secret_id = azurerm_key_vault_secret.realtime_jwt_secret.id
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.realtime_jwt_secret.versionless_id
   }
   secret {
     name                = "redis-auth"
-    identity            = azurerm_user_assigned_identity.api.id
-    key_vault_secret_id = azurerm_key_vault_secret.redis_auth.id
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.redis_auth.versionless_id
+  }
+  secret {
+    name                = "redis-url"
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.redis_url.versionless_id
   }
   secret {
     name                = "service-token"
-    identity            = azurerm_user_assigned_identity.api.id
-    key_vault_secret_id = azurerm_key_vault_secret.service_token.id
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.service_token.versionless_id
+  }
+  secret {
+    name                = "jwt-secret"
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.jwt_secret.versionless_id
+  }
+  secret {
+    name                = "metrics-token"
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.metrics_token.versionless_id
+  }
+  secret {
+    name                = "realtime-internal-token"
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.realtime_internal_token.versionless_id
   }
   dynamic "secret" {
     for_each = toset(var.openai_api_key == "" ? [] : ["openai"])
     content {
       name                = "openai-api-key"
-      identity            = azurerm_user_assigned_identity.api.id
-      key_vault_secret_id = azurerm_key_vault_secret.openai_api_key[0].id
+      identity            = azurerm_user_assigned_identity.runtime.id
+      key_vault_secret_id = azurerm_key_vault_secret.openai_api_key[0].versionless_id
     }
   }
 
@@ -107,10 +138,12 @@ resource "azurerm_container_app" "api" {
     max_replicas = var.api_max_replicas
 
     container {
-      name   = "api"
-      image  = var.api_image
-      cpu    = 1.0
-      memory = "2Gi"
+      name    = "api"
+      image   = var.api_image
+      cpu     = 1.0
+      memory  = "2Gi"
+      command = ["/bin/sh", "-c"]
+      args    = ["python -m app.scripts.run_migrations && exec python -m app.scripts.serve"]
 
       # ── Static config ────────────────────────────────────────────────────────
       env {
@@ -118,8 +151,23 @@ resource "azurerm_container_app" "api" {
         value = "azure-containerapps"
       }
       env {
+        name = "AISOC_DATABASE_CONFIG_REVISION"
+        value = nonsensitive(sha256(join(":", [
+          azurerm_key_vault_secret.database_url.value,
+          azurerm_key_vault_secret.database_migration_url.value,
+        ])))
+      }
+      env {
+        name  = "AISOC_REDIS_CONFIG_REVISION"
+        value = nonsensitive(sha256(azurerm_key_vault_secret.redis_url.value))
+      }
+      env {
         name  = "ENVIRONMENT"
         value = "production"
+      }
+      env {
+        name  = "AISOC_MIGRATIONS_STRICT"
+        value = "1"
       }
       env {
         name  = "POSTGRES_DB"
@@ -127,7 +175,7 @@ resource "azurerm_container_app" "api" {
       }
       env {
         name  = "POSTGRES_USER"
-        value = var.postgres_user
+        value = "aisoc_app"
       }
       env {
         name  = "POSTGRES_HOST"
@@ -168,6 +216,18 @@ resource "azurerm_container_app" "api" {
 
       # ── Secret-backed env ────────────────────────────────────────────────────
       env {
+        name        = "DATABASE_URL"
+        secret_name = "database-url"
+      }
+      env {
+        name        = "DATABASE_MIGRATION_URL"
+        secret_name = "database-migration-url"
+      }
+      env {
+        name        = "AISOC_APP_DB_PASSWORD"
+        secret_name = "postgres-password"
+      }
+      env {
         name        = "POSTGRES_PASSWORD"
         secret_name = "postgres-password"
       }
@@ -188,12 +248,28 @@ resource "azurerm_container_app" "api" {
         secret_name = "redis-auth"
       }
       env {
+        name        = "REDIS_URL"
+        secret_name = "redis-url"
+      }
+      env {
         name        = "AISOC_SERVICE_TOKEN"
         secret_name = "service-token"
       }
       env {
         name        = "AISOC_ACTIONS_SERVICE_TOKEN"
         secret_name = "service-token"
+      }
+      env {
+        name        = "JWT_SECRET"
+        secret_name = "jwt-secret"
+      }
+      env {
+        name        = "METRICS_TOKEN"
+        secret_name = "metrics-token"
+      }
+      env {
+        name        = "REALTIME_INTERNAL_TOKEN"
+        secret_name = "realtime-internal-token"
       }
       dynamic "env" {
         for_each = toset(var.openai_api_key == "" ? [] : ["openai"])
@@ -219,16 +295,17 @@ resource "azurerm_container_app" "web" {
   container_app_environment_id = azurerm_container_app_environment.main.id
   resource_group_name          = azurerm_resource_group.main.name
   revision_mode                = "Single"
+  workload_profile_name        = "Consumption"
   tags                         = var.tags
 
   identity {
     type         = "UserAssigned"
-    identity_ids = [azurerm_user_assigned_identity.web.id]
+    identity_ids = [azurerm_user_assigned_identity.runtime.id]
   }
 
   registry {
     server   = azurerm_container_registry.main.login_server
-    identity = azurerm_user_assigned_identity.web.id
+    identity = azurerm_user_assigned_identity.runtime.id
   }
 
   ingress {
@@ -257,7 +334,10 @@ resource "azurerm_container_app" "web" {
         value = "azure-containerapps"
       }
       env {
-        name  = "NEXT_PUBLIC_API_URL"
+        # The self-host web bundle uses same-origin browser requests and its
+        # startup script rewrites Next.js server routes from API_URL. A
+        # NEXT_PUBLIC_* variable set only at runtime cannot change the bundle.
+        name  = "API_URL"
         value = "https://${azurerm_container_app.api.ingress[0].fqdn}"
       }
       env {
@@ -277,37 +357,43 @@ resource "azurerm_container_app" "ingest" {
   container_app_environment_id = azurerm_container_app_environment.main.id
   resource_group_name          = azurerm_resource_group.main.name
   revision_mode                = "Single"
+  workload_profile_name        = "Consumption"
   tags                         = var.tags
 
   identity {
     type         = "UserAssigned"
-    identity_ids = [azurerm_user_assigned_identity.ingest.id]
+    identity_ids = [azurerm_user_assigned_identity.runtime.id]
   }
 
   registry {
     server   = azurerm_container_registry.main.login_server
-    identity = azurerm_user_assigned_identity.ingest.id
+    identity = azurerm_user_assigned_identity.runtime.id
   }
 
   secret {
     name                = "postgres-password"
-    identity            = azurerm_user_assigned_identity.ingest.id
-    key_vault_secret_id = azurerm_key_vault_secret.postgres_password.id
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.postgres_password.versionless_id
   }
   secret {
     name                = "secret-key"
-    identity            = azurerm_user_assigned_identity.ingest.id
-    key_vault_secret_id = azurerm_key_vault_secret.secret_key.id
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.secret_key.versionless_id
   }
   secret {
     name                = "redis-auth"
-    identity            = azurerm_user_assigned_identity.ingest.id
-    key_vault_secret_id = azurerm_key_vault_secret.redis_auth.id
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.redis_auth.versionless_id
   }
   secret {
     name                = "service-token"
-    identity            = azurerm_user_assigned_identity.ingest.id
-    key_vault_secret_id = azurerm_key_vault_secret.service_token.id
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.service_token.versionless_id
+  }
+  secret {
+    name                = "jwt-secret"
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.jwt_secret.versionless_id
   }
 
   ingress {
@@ -341,7 +427,7 @@ resource "azurerm_container_app" "ingest" {
       }
       env {
         name  = "POSTGRES_USER"
-        value = var.postgres_user
+        value = "aisoc_app"
       }
       env {
         name  = "POSTGRES_HOST"
@@ -383,6 +469,10 @@ resource "azurerm_container_app" "ingest" {
       env {
         name        = "AISOC_SERVICE_TOKEN"
         secret_name = "service-token"
+      }
+      env {
+        name        = "JWT_SECRET"
+        secret_name = "jwt-secret"
       }
     }
   }

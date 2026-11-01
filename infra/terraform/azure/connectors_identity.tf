@@ -54,6 +54,7 @@ resource "azurerm_container_app" "connectors" {
   container_app_environment_id = azurerm_container_app_environment.main.id
   resource_group_name          = azurerm_resource_group.main.name
   revision_mode                = "Single"
+  workload_profile_name        = "Consumption"
   tags                         = var.tags
 
   identity {
@@ -69,22 +70,22 @@ resource "azurerm_container_app" "connectors" {
   secret {
     name                = "database-url"
     identity            = azurerm_user_assigned_identity.connectors.id
-    key_vault_secret_id = azurerm_key_vault_secret.database_url.id
+    key_vault_secret_id = azurerm_key_vault_secret.database_asyncpg_url.versionless_id
   }
   secret {
     name                = "credential-key"
     identity            = azurerm_user_assigned_identity.connectors.id
-    key_vault_secret_id = azurerm_key_vault_secret.credential_key.id
+    key_vault_secret_id = azurerm_key_vault_secret.credential_key.versionless_id
   }
   secret {
     name                = "secret-key"
     identity            = azurerm_user_assigned_identity.connectors.id
-    key_vault_secret_id = azurerm_key_vault_secret.secret_key.id
+    key_vault_secret_id = azurerm_key_vault_secret.secret_key.versionless_id
   }
   secret {
     name                = "service-token"
     identity            = azurerm_user_assigned_identity.connectors.id
-    key_vault_secret_id = azurerm_key_vault_secret.service_token.id
+    key_vault_secret_id = azurerm_key_vault_secret.service_token.versionless_id
   }
 
   ingress {
@@ -118,6 +119,13 @@ resource "azurerm_container_app" "connectors" {
       env {
         name  = "AISOC_DEPLOYMENT"
         value = "azure-containerapps"
+      }
+      env {
+        name = "AISOC_DATABASE_CONFIG_REVISION"
+        value = nonsensitive(sha256(join(":", [
+          azurerm_key_vault_secret.database_asyncpg_url.versionless_id,
+          azurerm_key_vault_secret.database_asyncpg_url.value,
+        ])))
       }
       env {
         name  = "ENVIRONMENT"

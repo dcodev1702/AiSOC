@@ -268,6 +268,17 @@ def _migrations_required() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def _migrations_strict() -> bool:
+    """Whether the migration chain must stop at its first SQL failure.
+
+    Migration files are ordered and depend on objects created by earlier
+    files. Continuing after a failure only produces misleading follow-on
+    errors and can record later migrations against an incomplete schema.
+    """
+    raw = os.environ.get("AISOC_MIGRATIONS_STRICT", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 async def main() -> None:
     if not MIGRATIONS_DIR.exists():
         logger.warning("migrations dir not found: %s", MIGRATIONS_DIR)
@@ -328,6 +339,8 @@ async def main() -> None:
             else:
                 logger.error("✗ failed %s: %s", name, err)
                 failures.append((name, err or ""))
+                if _migrations_strict():
+                    raise SystemExit(f"migration {name} failed in strict mode")
 
         await _provision_runtime_role(conn)
 
@@ -336,7 +349,7 @@ async def main() -> None:
             # CI strict mode (Phase 3 migrations gate): any failed migration
             # must fail the job instead of shipping a partially-applied
             # schema that later boots "successfully" against missing tables.
-            if os.environ.get("AISOC_MIGRATIONS_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}:
+            if _migrations_strict():
                 raise SystemExit(f"{len(failures)} migration(s) failed in strict mode")
     finally:
         await conn.close()

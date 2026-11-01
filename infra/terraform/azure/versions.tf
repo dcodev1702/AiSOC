@@ -1,11 +1,8 @@
 /**
  * AiSOC — Azure serverless skeleton
  *
- * Provider pinning. Tested against Terraform 1.5+ and the azurerm 3.116
- * provider. The Container Apps, PostgreSQL Flexible Server, and Azure Cache
- * for Redis resources used here are all GA in the 3.x line; bump in lockstep
- * when you move to azurerm 4.x (a few attribute names changed there — see the
- * README upgrade note).
+ * Provider pinning. AzureRM 4.70+ is required for Azure Managed Redis, which
+ * supersedes the retired Azure Cache for Redis service for new deployments.
  */
 
 terraform {
@@ -14,7 +11,7 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 3.116"
+      version = "~> 4.70.0"
     }
     random = {
       source  = "hashicorp/random"
@@ -37,7 +34,8 @@ terraform {
 }
 
 provider "azurerm" {
-  skip_provider_registration = true
+  subscription_id                 = var.subscription_id != "" ? var.subscription_id : null
+  resource_provider_registrations = "none"
 
   features {
     key_vault {
@@ -58,9 +56,9 @@ provider "azurerm" {
 # assignments explicit while falling back to the current CLI subscription
 # when no separate Sentinel subscription is supplied.
 provider "azurerm" {
-  alias                      = "sentinel_subscription"
-  subscription_id            = var.sentinel_subscription_id != "" ? var.sentinel_subscription_id : null
-  skip_provider_registration = true
+  alias                           = "sentinel_subscription"
+  subscription_id                 = var.sentinel_subscription_id != "" ? var.sentinel_subscription_id : null
+  resource_provider_registrations = "none"
 
   features {}
 }

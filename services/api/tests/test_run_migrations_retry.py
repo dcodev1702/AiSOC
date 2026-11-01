@@ -9,6 +9,7 @@ to those transient connect errors without masking real auth/config failures.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import asyncpg
@@ -112,3 +113,42 @@ def test_migrations_required_truthy_values(monkeypatch, value):
     is 'I didn't mean to opt out'."""
     monkeypatch.setenv("AISOC_MIGRATIONS_REQUIRED", value)
     assert run_migrations._migrations_required() is True
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", "TRUE", " On "])
+def test_migrations_strict_recognises_enabled_values(monkeypatch, value):
+    monkeypatch.setenv("AISOC_MIGRATIONS_STRICT", value)
+    assert run_migrations._migrations_strict() is True
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no", "off"])
+def test_migrations_strict_defaults_to_disabled(monkeypatch, value):
+    monkeypatch.setenv("AISOC_MIGRATIONS_STRICT", value)
+    assert run_migrations._migrations_strict() is False
+
+
+@pytest.mark.asyncio
+async def test_strict_mode_stops_before_dependent_migrations(monkeypatch, tmp_path: Path):
+    """A failed migration must not let later dependent files be recorded."""
+    (tmp_path / "001_first.sql").write_text("SELECT broken", encoding="utf-8")
+    (tmp_path / "002_dependent.sql").write_text("SELECT depends_on_first", encoding="utf-8")
+
+    fake_conn = AsyncMock()
+    attempted: list[str] = []
+
+    async def fail_first(_conn, name, _sql):
+        attempted.append(name)
+        return name, False, "expected failure"
+
+    monkeypatch.setattr(run_migrations, "MIGRATIONS_DIR", tmp_path)
+    monkeypatch.setattr(run_migrations, "migration_url", lambda: "postgresql://owner@example/db")
+    monkeypatch.setattr(run_migrations, "_connect", AsyncMock(return_value=fake_conn))
+    monkeypatch.setattr(run_migrations, "_applied", AsyncMock(return_value=set()))
+    monkeypatch.setattr(run_migrations, "_apply_one", fail_first)
+    monkeypatch.setenv("AISOC_MIGRATIONS_STRICT", "1")
+
+    with pytest.raises(SystemExit, match="001_first.sql failed in strict mode"):
+        await run_migrations.main()
+
+    assert attempted == ["001_first.sql"]
+    fake_conn.close.assert_awaited_once()

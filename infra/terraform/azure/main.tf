@@ -5,12 +5,12 @@
  *   - a resource group that owns everything
  *   - a VNet with three subnets (Container Apps, Postgres delegation,
  *     private endpoints)
- *   - a Log Analytics workspace + Container Apps managed environment
+ *   - an existing Sentinel Log Analytics workspace + Container Apps environment
  *   - a regional Azure Container Registry for AiSOC container images
  *
  * Service-specific resources live in:
  *   database.tf        — PostgreSQL Flexible Server
- *   redis.tf           — Azure Cache for Redis
+ *   redis.tf           — Azure Managed Redis
  *   secrets.tf         — Key Vault entries
  *   iam.tf             — user-assigned managed identities + role assignments
  *   container_apps.tf  — api / web / ingest container apps
@@ -23,7 +23,9 @@ locals {
   # az-cli context; we only thread it into the provider via the root module if
   # the operator set it explicitly (kept out of the provider block to avoid a
   # required value during `validate`).
-  subscription_id = var.subscription_id != "" ? var.subscription_id : data.azurerm_client_config.current.subscription_id
+  subscription_id    = var.subscription_id != "" ? var.subscription_id : data.azurerm_client_config.current.subscription_id
+  workload_location  = var.workload_location != "" ? var.workload_location : var.location
+  workload_vnet_name = var.workload_location != "" && var.workload_location != var.location ? "${var.name_prefix}-${replace(var.workload_location, " ", "")}-vnet" : "${var.name_prefix}-vnet"
 }
 
 # ─── Resource group ──────────────────────────────────────────────────────────
@@ -43,8 +45,8 @@ resource "azurerm_resource_group" "main" {
 #   - privatelink   : holds private endpoints (Redis today, more later)
 
 resource "azurerm_virtual_network" "main" {
-  name                = "${var.name_prefix}-vnet"
-  location            = azurerm_resource_group.main.location
+  name                = local.workload_vnet_name
+  location            = local.workload_location
   resource_group_name = azurerm_resource_group.main.name
   address_space       = [var.vnet_cidr]
   tags                = var.tags
@@ -55,6 +57,16 @@ resource "azurerm_subnet" "aca" {
   resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
   address_prefixes     = [var.aca_subnet_cidr]
+
+  delegation {
+    name = "container-apps"
+    service_delegation {
+      name = "Microsoft.App/environments"
+      actions = [
+        "Microsoft.Network/virtualNetworks/subnets/join/action",
+      ]
+    }
+  }
 }
 
 resource "azurerm_subnet" "postgres" {
@@ -62,6 +74,7 @@ resource "azurerm_subnet" "postgres" {
   resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
   address_prefixes     = [var.postgres_subnet_cidr]
+  service_endpoints    = ["Microsoft.Storage"]
 
   delegation {
     name = "fs"
@@ -83,16 +96,15 @@ resource "azurerm_subnet" "privatelink" {
 
 # ─── Observability ───────────────────────────────────────────────────────────
 #
-# Container Apps stream stdout/stderr + system logs into Log Analytics. 30-day
-# retention keeps the demo cheap; bump for production audit needs.
+# Reuse the existing Sentinel-backed Log Analytics workspace. This avoids a
+# second telemetry island and keeps Container Apps diagnostics beside the
+# security evidence the deployment is intended to exercise.
 
-resource "azurerm_log_analytics_workspace" "main" {
-  name                = "${var.name_prefix}-logs"
-  location            = azurerm_resource_group.main.location
-  resource_group_name = azurerm_resource_group.main.name
-  sku                 = "PerGB2018"
-  retention_in_days   = 30
-  tags                = var.tags
+data "azurerm_log_analytics_workspace" "sentinel" {
+  provider = azurerm.sentinel_subscription
+
+  name                = var.sentinel_workspace_name
+  resource_group_name = var.sentinel_rg_name
 }
 
 # ─── Container Apps environment ──────────────────────────────────────────────
@@ -102,13 +114,21 @@ resource "azurerm_log_analytics_workspace" "main" {
 # keeps the ingress public (the api/web surfaces customers hit first).
 
 resource "azurerm_container_app_environment" "main" {
-  name                       = "${var.name_prefix}-aca-env"
-  location                   = azurerm_resource_group.main.location
-  resource_group_name        = azurerm_resource_group.main.name
-  log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
+  name                               = "${var.name_prefix}-aca-env"
+  location                           = local.workload_location
+  resource_group_name                = azurerm_resource_group.main.name
+  log_analytics_workspace_id         = data.azurerm_log_analytics_workspace.sentinel.id
+  infrastructure_resource_group_name = "ME_${var.name_prefix}-aca-env_${azurerm_resource_group.main.name}_${replace(local.workload_location, " ", "")}"
 
   infrastructure_subnet_id       = azurerm_subnet.aca.id
   internal_load_balancer_enabled = false
+
+  workload_profile {
+    name                  = "Consumption"
+    workload_profile_type = "Consumption"
+    minimum_count         = 0
+    maximum_count         = 0
+  }
 
   tags = var.tags
 }

@@ -15,9 +15,15 @@ variable "subscription_id" {
 }
 
 variable "location" {
-  description = "Primary Azure region for the resource group, Container Apps, Postgres, and Redis."
+  description = "Azure region for the resource group and regional control-plane resources."
   type        = string
   default     = "eastus"
+}
+
+variable "workload_location" {
+  description = "Optional region for the VNet, Container Apps, PostgreSQL, and Managed Redis. Empty uses location. Useful when a subscription has regional service restrictions."
+  type        = string
+  default     = ""
 }
 
 variable "name_prefix" {
@@ -104,24 +110,18 @@ variable "postgres_zone" {
   default     = "1"
 }
 
-# ─── Azure Cache for Redis ───────────────────────────────────────────────────
+# ─── Azure Managed Redis ─────────────────────────────────────────────────────
 
-variable "redis_sku" {
-  description = "Redis SKU — Basic for dev (no SLA, no HA), Standard for prod, Premium for VNet injection / clustering."
+variable "managed_redis_sku" {
+  description = "Azure Managed Redis SKU. Balanced_B0 is the smallest development tier."
   type        = string
-  default     = "Standard"
+  default     = "Balanced_B0"
 }
 
-variable "redis_family" {
-  description = "Redis SKU family — C for Basic/Standard, P for Premium."
-  type        = string
-  default     = "C"
-}
-
-variable "redis_capacity" {
-  description = "Redis size unit (0=250MB, 1=1GB, 2=2.5GB for the C family)."
-  type        = number
-  default     = 1
+variable "managed_redis_high_availability_enabled" {
+  description = "Enable Azure Managed Redis high availability. Disable only for a cost-sensitive test deployment."
+  type        = bool
+  default     = true
 }
 
 # ─── Container Apps ──────────────────────────────────────────────────────────
@@ -164,6 +164,11 @@ variable "sentinel_subscription_id" {
 
 variable "sentinel_rg_name" {
   description = "Resource group containing the existing Log Analytics workspace with Microsoft Sentinel enabled."
+  type        = string
+}
+
+variable "sentinel_workspace_name" {
+  description = "Name of the existing Log Analytics workspace with Microsoft Sentinel enabled. It is reused for Container Apps diagnostics."
   type        = string
 }
 

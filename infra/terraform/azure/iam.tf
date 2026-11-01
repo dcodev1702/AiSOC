@@ -1,36 +1,24 @@
 /**
  * AiSOC — Azure serverless skeleton
  *
- * Per-service runtime identities. Each Container App runs as a dedicated
- * user-assigned managed identity so role assignments stay scoped to one
- * workload at a time (the GCP stack uses one service account per service for
- * the same reason).
+ * Three user-assigned managed identities split the deployment by trust
+ * boundary rather than by process:
+ *   - runtime: api, web, and ingest platform access
+ *   - connectors: read-only Sentinel polling
+ *   - actions: governed Sentinel writeback
  *
  * Bindings:
- *   - every identity gets AcrPull on the registry (pull its own image)
- *   - api + ingest get "Key Vault Secrets User" (read DB / vault / redis creds)
- *   - web is a Next.js bundle that only talks to the API over HTTP, so it gets
- *     no Key Vault access
+ * Every identity gets AcrPull. All three read runtime secrets from Key Vault;
+ * the Sentinel permissions remain exclusive to connectors and actions.
+ * Sharing runtime trades per-process isolation for a smaller, test-friendly
+ * RBAC surface. Split it again for production if web compromise must not grant
+ * access to API/ingest secrets.
  */
 
 # ─── User-assigned managed identities ────────────────────────────────────────
 
-resource "azurerm_user_assigned_identity" "api" {
-  name                = "${var.name_prefix}-api-id"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
-  tags                = var.tags
-}
-
-resource "azurerm_user_assigned_identity" "web" {
-  name                = "${var.name_prefix}-web-id"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
-  tags                = var.tags
-}
-
-resource "azurerm_user_assigned_identity" "ingest" {
-  name                = "${var.name_prefix}-ingest-id"
+resource "azurerm_user_assigned_identity" "runtime" {
+  name                = "${var.name_prefix}-runtime"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   tags                = var.tags
@@ -40,9 +28,7 @@ resource "azurerm_user_assigned_identity" "ingest" {
 
 locals {
   acr_pull_identities = {
-    api        = azurerm_user_assigned_identity.api.principal_id
-    web        = azurerm_user_assigned_identity.web.principal_id
-    ingest     = azurerm_user_assigned_identity.ingest.principal_id
+    runtime    = azurerm_user_assigned_identity.runtime.principal_id
     connectors = azurerm_user_assigned_identity.connectors.principal_id
     actions    = azurerm_user_assigned_identity.actions.principal_id
   }
@@ -61,8 +47,7 @@ resource "azurerm_role_assignment" "acr_pull" {
 
 locals {
   kv_reader_identities = {
-    api        = azurerm_user_assigned_identity.api.principal_id
-    ingest     = azurerm_user_assigned_identity.ingest.principal_id
+    runtime    = azurerm_user_assigned_identity.runtime.principal_id
     connectors = azurerm_user_assigned_identity.connectors.principal_id
     actions    = azurerm_user_assigned_identity.actions.principal_id
   }

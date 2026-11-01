@@ -9,10 +9,12 @@
 
 # subscription_id = "00000000-0000-0000-0000-000000000000"  # or use ARM_SUBSCRIPTION_ID
 # location        = "eastus"
+# workload_location = "northeurope" # optional when a service is restricted in the RG region
 # name_prefix     = "aisoc"   # 3-12 lowercase chars; keeps ACR + Key Vault names valid
 
 # Existing Microsoft Sentinel workspace (same Entra tenant as this deployment).
 sentinel_rg_name = "replace-with-sentinel-resource-group"
+sentinel_workspace_name = "replace-with-sentinel-workspace-name"
 # sentinel_subscription_id = "00000000-0000-0000-0000-000000000000" # empty uses current subscription
 
 # tags = {
@@ -37,11 +39,10 @@ sentinel_rg_name = "replace-with-sentinel-resource-group"
 # postgres_user       = "aisoc"
 # postgres_zone       = "1"
 
-# ─── Azure Cache for Redis ───────────────────────────────────────────────────
+# ─── Azure Managed Redis ─────────────────────────────────────────────────────
 
-# redis_sku      = "Standard"   # Basic = no SLA/HA, Premium = VNet injection
-# redis_family   = "C"
-# redis_capacity = 1            # 0=250MB, 1=1GB, 2=2.5GB (C family)
+# managed_redis_sku                       = "Balanced_B0"
+# managed_redis_high_availability_enabled = true # false only for a test deployment
 
 # ─── Container Apps images ───────────────────────────────────────────────────
 #
