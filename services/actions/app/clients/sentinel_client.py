@@ -1,24 +1,51 @@
 """Microsoft Sentinel REST client — incident lifecycle writeback.
 
+Patched to support an Azure user-assigned managed identity (UAMI) in addition
+to the upstream Entra app-registration + client-secret auth mode. Everything
+below the ``_access_token`` method is a byte-for-byte port of the upstream
+file; only the auth path, the constructor signature, and a new ``from_params``
+helper changed.
+
 Sentinel incidents live behind Azure Resource Manager, so every call needs the
 full workspace path (subscription / resource group / workspace) plus an Entra
-application token scoped to ``https://management.azure.com/.default``. The
-app registration needs the *Microsoft Sentinel Responder* role on the
-workspace; *Reader* is enough to fetch an incident and not enough to update
-one, which surfaces as a 403 on the PATCH and nothing earlier.
+token scoped to ``https://management.azure.com/.default``. The identity (app
+registration *or* managed identity) needs the *Microsoft Sentinel Responder*
+role on the workspace; *Reader* is enough to fetch an incident and not enough
+to update one, which surfaces as a 403 on the PATCH and nothing earlier.
 
 Credentials expected in ``ActionRequest.parameters``:
+
+Client-secret mode (upstream, unchanged):
     sentinel_tenant_id, sentinel_client_id, sentinel_client_secret
     sentinel_subscription_id, sentinel_resource_group, sentinel_workspace_name
+
+Managed-identity mode (new):
+    sentinel_auth_mode="managed_identity"
+    sentinel_managed_identity_client_id
+    sentinel_subscription_id, sentinel_resource_group, sentinel_workspace_name
+
+File intended location:
+  services/actions/app/clients/sentinel_client.py
 """
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, Literal
 
 import httpx
 import structlog
+
+# azure-identity is an optional runtime dependency — a deployment that only
+# ever uses client-secret auth should still boot without it installed. The
+# dispatcher validates in ``from_params`` / the constructor that the package
+# is present when a managed-identity row is used.
+try:  # pragma: no cover - exercised in managed-identity CI only
+    from azure.identity.aio import ManagedIdentityCredential
+    _AZURE_IDENTITY_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    ManagedIdentityCredential = None  # type: ignore[assignment,misc]
+    _AZURE_IDENTITY_AVAILABLE = False
 
 logger = structlog.get_logger()
 
@@ -37,29 +64,135 @@ CLASSIFICATION_FALSE_POSITIVE = "FalsePositive"
 CLASSIFICATION_BENIGN_POSITIVE = "BenignPositive"
 CLASSIFICATION_TRUE_POSITIVE = "TruePositive"
 
+#: Refresh managed-identity tokens this many seconds before expiry so a
+#: long-running backfill (``list_closed_incidents`` over a wide window) never
+#: races the clock mid-page.
+_TOKEN_REFRESH_SKEW_S = 60
+
+AuthMode = Literal["client_secret", "managed_identity"]
+
 
 class SentinelClient:
-    """Async client for Microsoft Sentinel incident updates."""
+    """Async client for Microsoft Sentinel incident updates.
+
+    Two auth modes, picked at construction time:
+
+    * ``client_secret`` (default, unchanged from upstream): Entra app
+      registration with a client secret, three fields required.
+    * ``managed_identity``: Azure user-assigned managed identity, one
+      field required (the identity's ``clientId``). The tenant comes from
+      the identity itself. Only usable when the actions service runs on
+      Azure compute with the identity attached.
+
+    All upstream call sites that use keyword arguments keep working with
+    no edits; the only new requirement is that the dispatcher forwards the
+    additional ``sentinel_auth_mode`` and ``sentinel_managed_identity_client_id``
+    fields when the saved connector row has them. ``from_params`` below
+    does that translation in one place.
+    """
 
     def __init__(
         self,
-        tenant_id: str,
-        client_id: str,
-        client_secret: str,
+        *,
         subscription_id: str,
         resource_group: str,
         workspace_name: str,
-        *,
+        auth_mode: AuthMode = "client_secret",
+        tenant_id: str | None = None,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        managed_identity_client_id: str | None = None,
         timeout: float = 30.0,
     ) -> None:
-        self._tenant_id = tenant_id
-        self._client_id = client_id
-        self._client_secret = client_secret
         self._subscription_id = subscription_id
         self._resource_group = resource_group
         self._workspace_name = workspace_name
         self._timeout = timeout
+
+        self._auth_mode: AuthMode = auth_mode
+        self._tenant_id = tenant_id
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._mi_client_id = managed_identity_client_id
+
+        # Validate the mode-specific inputs up front so a misconfigured
+        # action row fails at dispatch rather than at first REST call. The
+        # executor wraps construction and surfaces this as a dispatch
+        # refusal, which the audit trail records with its reason.
+        if auth_mode == "client_secret":
+            missing = [
+                n for n, v in (
+                    ("tenant_id", tenant_id),
+                    ("client_id", client_id),
+                    ("client_secret", client_secret),
+                ) if not v
+            ]
+            if missing:
+                raise ValueError(
+                    "SentinelClient: client_secret mode requires "
+                    f"{', '.join(missing)}"
+                )
+        elif auth_mode == "managed_identity":
+            if not _AZURE_IDENTITY_AVAILABLE:
+                raise ValueError(
+                    "SentinelClient: managed_identity mode requires the "
+                    "azure-identity package. Add 'azure-identity' to "
+                    "services/actions/pyproject.toml."
+                )
+            if not managed_identity_client_id:
+                raise ValueError(
+                    "SentinelClient: managed_identity_client_id is required "
+                    "(the user-assigned identity's clientId, not its "
+                    "principalId or resource ID)."
+                )
+        else:
+            raise ValueError(f"SentinelClient: unknown auth_mode={auth_mode!r}")
+
+        # Cached bearer, upstream behaviour. A single ActionRequest completes
+        # well inside Entra's hour-long token TTL, so the extra expiry-aware
+        # caching from the polling connector isn't needed here. For
+        # ``list_closed_incidents`` on a wide backfill we additionally honour
+        # ``_TOKEN_REFRESH_SKEW_S`` when the token tracks its own expiry
+        # (managed-identity path), so the long paging loop can't race the
+        # clock mid-sweep.
         self._token: str | None = None
+        self._token_expires_on: int | None = None
+
+        # Lazy-constructed credential; released by ``close()`` on executor
+        # shutdown.
+        self._mi_credential: ManagedIdentityCredential | None = None
+
+    # ------------------------------------------------------------------
+    # Factory
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_params(cls, params: dict[str, Any]) -> "SentinelClient":
+        """Build a client from the dict shape stored on ``ActionRequest.parameters``.
+
+        Keeps the auth-mode dispatch in one place so the executor doesn't
+        have to know which fields each mode needs. Field names match the
+        upstream convention (``sentinel_*`` prefix) because the dispatcher
+        already stores and forwards them that way; adding a prefix-free
+        alias here would just invite drift.
+        """
+        auth_mode: AuthMode = params.get("sentinel_auth_mode", "client_secret")
+        return cls(
+            subscription_id=params["sentinel_subscription_id"],
+            resource_group=params["sentinel_resource_group"],
+            workspace_name=params["sentinel_workspace_name"],
+            auth_mode=auth_mode,
+            tenant_id=params.get("sentinel_tenant_id"),
+            client_id=params.get("sentinel_client_id"),
+            client_secret=params.get("sentinel_client_secret"),
+            managed_identity_client_id=params.get(
+                "sentinel_managed_identity_client_id"
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # URL builders — identical to upstream.
+    # ------------------------------------------------------------------
 
     def _incident_url(self, incident_id: str) -> str:
         return (
@@ -69,22 +202,6 @@ class SentinelClient:
             f"/providers/Microsoft.SecurityInsights/incidents/{incident_id}"
         )
 
-    async def _access_token(self, client: httpx.AsyncClient) -> str:
-        if self._token:
-            return self._token
-        response = await client.post(
-            f"{AUTHORITY}/{self._tenant_id}/oauth2/v2.0/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": self._client_id,
-                "client_secret": self._client_secret,
-                "scope": SCOPE,
-            },
-        )
-        response.raise_for_status()
-        self._token = response.json()["access_token"]
-        return self._token
-
     def _incidents_url(self) -> str:
         return (
             f"{ARM_BASE}/subscriptions/{self._subscription_id}"
@@ -92,6 +209,77 @@ class SentinelClient:
             f"/providers/Microsoft.OperationalInsights/workspaces/{self._workspace_name}"
             f"/providers/Microsoft.SecurityInsights/incidents"
         )
+
+    # ------------------------------------------------------------------
+    # Token acquisition
+    # ------------------------------------------------------------------
+
+    def _token_is_fresh(self) -> bool:
+        """True iff the cached token exists and is not within the skew window.
+
+        Client-secret tokens cache without an expiry (upstream behaviour) —
+        this returns True as long as the cache has something, matching
+        upstream. Managed-identity tokens track ``expires_on`` and the skew
+        kicks in so a long paging loop doesn't fail halfway with a 401.
+        """
+        if self._token is None:
+            return False
+        if self._token_expires_on is None:
+            return True
+        now = int(datetime.now(UTC).timestamp())
+        return now < (self._token_expires_on - _TOKEN_REFRESH_SKEW_S)
+
+    async def _access_token(self, client: httpx.AsyncClient) -> str:
+        """Return a bearer, dispatching to whichever path ``auth_mode`` selected."""
+        if self._token_is_fresh() and self._token is not None:
+            return self._token
+
+        if self._auth_mode == "client_secret":
+            # Upstream flow verbatim, except the result is stored with no
+            # expiry so ``_token_is_fresh`` keeps upstream caching semantics.
+            assert self._tenant_id and self._client_id and self._client_secret
+            response = await client.post(
+                f"{AUTHORITY}/{self._tenant_id}/oauth2/v2.0/token",
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self._client_id,
+                    "client_secret": self._client_secret,
+                    "scope": SCOPE,
+                },
+            )
+            response.raise_for_status()
+            self._token = response.json()["access_token"]
+            self._token_expires_on = None  # match upstream: no expiry check
+            return self._token
+
+        # managed_identity
+        assert ManagedIdentityCredential is not None
+        if self._mi_credential is None:
+            # Named by client_id because omitting the identifier falls back
+            # to a system-assigned identity, which this client never wants.
+            self._mi_credential = ManagedIdentityCredential(
+                client_id=self._mi_client_id
+            )
+        access = await self._mi_credential.get_token(SCOPE)
+        self._token = access.token
+        self._token_expires_on = access.expires_on
+        return self._token
+
+    async def close(self) -> None:
+        """Release the managed-identity credential, if any.
+
+        Executors that build the client once per request can ignore this —
+        the credential will be GCed. Any caller that keeps a client around
+        across requests (not the current pattern, but a plausible one)
+        should call ``close()`` on teardown.
+        """
+        if self._mi_credential is not None:
+            await self._mi_credential.close()
+            self._mi_credential = None
+
+    # ------------------------------------------------------------------
+    # Public API — unchanged from upstream.
+    # ------------------------------------------------------------------
 
     async def list_closed_incidents(
         self,
@@ -132,7 +320,18 @@ class SentinelClient:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             token = await self._access_token(client)
             while url and len(results) < limit:
-                response = await client.get(url, headers={"Authorization": f"Bearer {token}"}, params=params)
+                # Refresh the bearer per page when the cache went stale
+                # mid-sweep (only possible on the managed-identity path,
+                # which tracks expiry). Upstream re-used the first token
+                # for the whole backfill — fine inside an hour, but a
+                # 24-hour window can straddle a rotation.
+                if not self._token_is_fresh():
+                    token = await self._access_token(client)
+                response = await client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {token}"},
+                    params=params,
+                )
                 response.raise_for_status()
                 body = response.json() if response.content else {}
                 results.extend(body.get("value") or [])
@@ -142,7 +341,9 @@ class SentinelClient:
                 params = None
             incidents = results[:limit]
             for incident in incidents:
-                entities = await self._incident_entities(client, token, str(incident.get("name") or ""))
+                entities = await self._incident_entities(
+                    client, token, str(incident.get("name") or "")
+                )
                 if entities:
                     incident["entities"] = entities
             return incidents
@@ -176,9 +377,16 @@ class SentinelClient:
             response.raise_for_status()
             body = response.json() if response.content else {}
         except Exception as exc:  # noqa: BLE001, a missing entity list degrades to no host and no user
-            logger.warning("sentinel.incident_entities_unavailable", incident_id=incident_id, error=str(exc))
+            logger.warning(
+                "sentinel.incident_entities_unavailable",
+                incident_id=incident_id,
+                error=str(exc),
+            )
             return []
-        return [entity for entity in body.get("entities") or [] if isinstance(entity, dict)]
+        return [
+            entity for entity in body.get("entities") or []
+            if isinstance(entity, dict)
+        ]
 
     async def get_incident(self, incident_id: str) -> dict[str, Any]:
         """Read one incident. Used as the writeback verification probe."""
@@ -211,13 +419,19 @@ class SentinelClient:
         """
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             token = await self._access_token(client)
-            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            }
             url = self._incident_url(incident_id)
             params = {"api-version": API_VERSION}
 
             current = await client.get(url, headers=headers, params=params)
             current.raise_for_status()
-            existing = (current.json() or {}).get("properties", {}) if current.content else {}
+            existing = (
+                (current.json() or {}).get("properties", {})
+                if current.content else {}
+            )
 
             properties: dict[str, Any] = {
                 "title": existing.get("title") or f"AiSOC incident {incident_id}",
@@ -231,13 +445,16 @@ class SentinelClient:
             if owner_upn:
                 properties["owner"] = {"userPrincipalName": owner_upn}
 
-            response = await client.patch(url, headers=headers, params=params, json={"properties": properties})
+            response = await client.patch(
+                url, headers=headers, params=params, json={"properties": properties}
+            )
             response.raise_for_status()
             logger.info(
                 "sentinel.incident.updated",
                 incident_id=incident_id,
                 status=status,
                 classification=classification,
+                auth_mode=self._auth_mode,
             )
             return {
                 "success": True,

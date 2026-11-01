@@ -42,6 +42,13 @@ asyncpg = "^0.29.0"
 # CVE-2024-12797 because agents already required 46 and CI was installing
 # `>=41,<46` — a range disjoint from what the image shipped.
 cryptography = ">=46,<51"
+# Managed-identity support for the Microsoft Sentinel connector. Imported
+# lazily by ``app/connectors/microsoft_sentinel.py``, so a deployment that
+# only uses client-secret auth still works if the package resolves at
+# install time but is never exercised. The connector raises a clear
+# ValueError at construction when ``auth_mode=managed_identity`` is
+# selected but the package is missing — see the import guard.
+azure-identity = "^1.19.0"
 
 [tool.poetry.group.dev.dependencies]
 # Floored at 9.0.3 for GHSA advisory coverage; the caret pins excluded it.
