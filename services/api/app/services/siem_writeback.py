@@ -476,14 +476,25 @@ async def _write_one(
 def _operational_config(connector: Connector) -> dict[str, Any]:
     """Non-secret per-instance settings the writeback needs.
 
-    Today that is QRadar's closing reason id, which is deployment-specific and
-    which QRadar refuses a close without. Read from ``connector_config``
-    rather than ``auth_config`` because it is configuration, not a secret, and
-    it must not be encrypted at rest as though it were one.
+    QRadar's closing reason and Microsoft Sentinel's workspace coordinates are
+    deployment-specific configuration rather than secrets. Sentinel's client
+    secret is still read from the encrypted auth_config alongside these keys.
     """
     config = connector.connector_config or {}
     out: dict[str, Any] = {}
-    for key in ("closing_reason_id", "owner", "owner_upn"):
+    for key in (
+        "closing_reason_id",
+        "owner",
+        "owner_upn",
+        "auth_mode",
+        "tenant_id",
+        "client_id",
+        "managed_identity_client_id",
+        "subscription_id",
+        "resource_group",
+        "workspace",
+        "workspace_name",
+    ):
         if config.get(key) is not None:
             out[key] = config[key]
     return out

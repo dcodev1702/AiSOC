@@ -144,6 +144,29 @@ variable "ingest_image" {
   default     = "ghcr.io/beenuar/aisoc-ingest:latest"
 }
 
+variable "connectors_image" {
+  description = "Container image for the connectors scheduler and catalog service."
+  type        = string
+  default     = "ghcr.io/beenuar/aisoc-connectors:latest"
+}
+
+variable "actions_image" {
+  description = "Container image for the governed actions service."
+  type        = string
+  default     = "ghcr.io/beenuar/aisoc-actions:latest"
+}
+
+variable "sentinel_subscription_id" {
+  description = "Subscription containing the existing Sentinel workspace. Empty uses the authenticated Azure subscription."
+  type        = string
+  default     = ""
+}
+
+variable "sentinel_rg_name" {
+  description = "Resource group containing the existing Log Analytics workspace with Microsoft Sentinel enabled."
+  type        = string
+}
+
 variable "api_min_replicas" {
   description = "Minimum Container App replicas for the API. Set >0 to avoid cold starts."
   type        = number

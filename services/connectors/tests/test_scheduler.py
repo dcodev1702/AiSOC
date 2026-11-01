@@ -501,6 +501,22 @@ async def test_poll_one_constructor_typeerror(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_poll_one_constructor_valueerror(monkeypatch):
+    inst = _make_instance(connector_type="fake_connector")
+
+    def bad_ctor(**_kwargs: Any) -> Any:
+        raise ValueError("managed identity is not attached")
+
+    monkeypatch.setattr("app.scheduler.CONNECTOR_REGISTRY", {"fake_connector": bad_ctor})
+
+    scheduler = ConnectorScheduler(engine=_FakeEngine([inst]), ingest_client=_FakeIngestClient(), vault=_FakeVault())
+    await scheduler._poll_one(connector_id=inst.id)
+
+    engine: _FakeEngine = scheduler._engine  # type: ignore[assignment]
+    assert engine.failure_calls == [inst.id]
+
+
+@pytest.mark.asyncio
 async def test_poll_one_fetch_raises(monkeypatch):
     inst = _make_instance(connector_type="fake_connector")
     fake_connector = MagicMock()

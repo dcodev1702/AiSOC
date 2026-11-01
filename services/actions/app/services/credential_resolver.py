@@ -112,8 +112,11 @@ VENDOR_CREDENTIAL_MAP: dict[str, dict[str, str]] = {
         "tenant_id": "sentinel_tenant_id",
         "client_id": "sentinel_client_id",
         "client_secret": "sentinel_client_secret",
+        "auth_mode": "sentinel_auth_mode",
+        "managed_identity_client_id": "sentinel_managed_identity_client_id",
         "subscription_id": "sentinel_subscription_id",
         "resource_group": "sentinel_resource_group",
+        "workspace": "sentinel_workspace_name",
         "workspace_name": "sentinel_workspace_name",
     },
     "qradar": {

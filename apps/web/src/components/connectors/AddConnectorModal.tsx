@@ -85,7 +85,7 @@ function describeApiError(err: unknown, fallback: string): string {
  * sees them already populated. Secrets always start empty — never seed a
  * default secret, even if the schema were to declare one.
  */
-function buildInitialValues(
+export function buildInitialValues(
   fields: ConnectorSchemaField[],
 ): Record<string, string | number | boolean> {
   const values: Record<string, string | number | boolean> = {};
@@ -118,13 +118,33 @@ function buildInitialValues(
  * The backend expects this split because secrets get encrypted and
  * non-secrets stay plaintext for poll-config readability in the UI.
  */
-function partitionFormValues(
+export function fieldIsVisible(
+  field: ConnectorSchemaField,
+  values: Record<string, string | number | boolean>,
+): boolean {
+  if (!field.visible_when) return true;
+  return Object.entries(field.visible_when).every(([name, expected]) => values[name] === expected);
+}
+
+export function missingRequiredFields(
+  fields: ConnectorSchemaField[],
+  values: Record<string, string | number | boolean>,
+): ConnectorSchemaField[] {
+  return fields.filter((field) => {
+    if (!field.required || !fieldIsVisible(field, values)) return false;
+    const value = values[field.name];
+    return value === '' || value === null || value === undefined;
+  });
+}
+
+export function partitionFormValues(
   fields: ConnectorSchemaField[],
   values: Record<string, string | number | boolean>,
 ): { auth_config: Record<string, unknown>; connector_config: Record<string, unknown> } {
   const auth_config: Record<string, unknown> = {};
   const connector_config: Record<string, unknown> = {};
   for (const f of fields) {
+    if (!fieldIsVisible(f, values)) continue;
     const v = values[f.name];
     // Empty optional fields are omitted entirely so the backend doesn't
     // need to disambiguate between "operator typed empty string" and
@@ -971,8 +991,8 @@ function ConfigStep({
   // Names of secret-typed fields, passed to the troubleshooter so the LLM
   // can reason about credential shape without ever seeing the values.
   const authConfigKeys = useMemo(
-    () => entry.fields.filter((f) => f.type === 'secret').map((f) => f.name),
-    [entry.fields],
+    () => entry.fields.filter((f) => f.type === 'secret' && fieldIsVisible(f, values)).map((f) => f.name),
+    [entry.fields, values],
   );
 
   // True when the schema advertises hosted OAuth — drives whether we render
@@ -1020,7 +1040,7 @@ function ConfigStep({
             Or use static credentials instead
           </summary>
           <div className="px-4 pb-4 pt-1 space-y-5">
-            {entry.fields.map((f) => (
+            {entry.fields.filter((f) => fieldIsVisible(f, values)).map((f) => (
               <div key={f.name}>
                 <label className="block text-xs font-semibold text-gray-300 mb-1">
                   {f.label}
@@ -1039,7 +1059,7 @@ function ConfigStep({
           </div>
         </details>
       ) : (
-        entry.fields.map((f) => (
+        entry.fields.filter((f) => fieldIsVisible(f, values)).map((f) => (
           <div key={f.name}>
             <label className="block text-xs font-semibold text-gray-300 mb-1">
               {f.label}
@@ -1397,6 +1417,11 @@ export function AddConnectorModal({
 
   const handleTest = async () => {
     if (!selected) return;
+    const missing = missingRequiredFields(selected.fields, values);
+    if (missing.length > 0) {
+      toast.error(`Required: ${missing.map((field) => field.label).join(', ')}`);
+      return;
+    }
     setTesting(true);
     setTestResult(null);
     try {
@@ -1430,6 +1455,11 @@ export function AddConnectorModal({
     if (!selected) return;
     if (!instanceName.trim()) {
       toast.error('Please give this connector an instance name');
+      return;
+    }
+    const missing = missingRequiredFields(selected.fields, values);
+    if (missing.length > 0) {
+      toast.error(`Required: ${missing.map((field) => field.label).join(', ')}`);
       return;
     }
     setSaving(true);

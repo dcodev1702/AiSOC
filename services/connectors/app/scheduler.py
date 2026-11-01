@@ -479,6 +479,30 @@ class ConnectorScheduler:
         connector_id: uuid.UUID,
         backfill_seconds: int | None = None,
     ) -> None:
+        connectors: list[Any] = []
+        try:
+            await self._poll_one_body(
+                connector_id=connector_id,
+                backfill_seconds=backfill_seconds,
+                connector_holder=connectors,
+            )
+        finally:
+            for connector in connectors:
+                try:
+                    await connector.close()
+                except Exception:
+                    logger.exception(
+                        "connector.scheduler.close_failed id=%s",
+                        connector_id,
+                    )
+
+    async def _poll_one_body(
+        self,
+        *,
+        connector_id: uuid.UUID,
+        backfill_seconds: int | None = None,
+        connector_holder: list[Any],
+    ) -> None:
         """Single-connector poll cycle.
 
         Always wraps the entire body in try/except so a misbehaving
@@ -578,7 +602,7 @@ class ConnectorScheduler:
         started = datetime.now(UTC)
         try:
             connector = connector_class(**kwargs)
-        except TypeError as exc:
+        except Exception as exc:
             logger.error(
                 "connector.scheduler.bad_config id=%s type=%s err=%s",
                 connector_id,
@@ -587,6 +611,7 @@ class ConnectorScheduler:
             )
             await self._record_failure(target.id)
             return
+        connector_holder.append(connector)
 
         # Seed the connector's ingest checkpoint (#529) so a restart resumes
         # from the last-accepted event instead of re-scanning.

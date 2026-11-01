@@ -36,37 +36,43 @@ resource "azurerm_user_assigned_identity" "ingest" {
   tags                = var.tags
 }
 
-# ─── ACR pull (all three) ────────────────────────────────────────────────────
+# ─── ACR pull ────────────────────────────────────────────────────────────────
 
 locals {
   acr_pull_identities = {
-    api    = azurerm_user_assigned_identity.api.principal_id
-    web    = azurerm_user_assigned_identity.web.principal_id
-    ingest = azurerm_user_assigned_identity.ingest.principal_id
+    api        = azurerm_user_assigned_identity.api.principal_id
+    web        = azurerm_user_assigned_identity.web.principal_id
+    ingest     = azurerm_user_assigned_identity.ingest.principal_id
+    connectors = azurerm_user_assigned_identity.connectors.principal_id
+    actions    = azurerm_user_assigned_identity.actions.principal_id
   }
 }
 
 resource "azurerm_role_assignment" "acr_pull" {
   for_each = local.acr_pull_identities
 
-  scope                = azurerm_container_registry.main.id
-  role_definition_name = "AcrPull"
-  principal_id         = each.value
+  scope                            = azurerm_container_registry.main.id
+  role_definition_name             = "AcrPull"
+  principal_id                     = each.value
+  skip_service_principal_aad_check = true
 }
 
-# ─── Key Vault Secrets User (api + ingest) ───────────────────────────────────
+# ─── Key Vault Secrets User ──────────────────────────────────────────────────
 
 locals {
   kv_reader_identities = {
-    api    = azurerm_user_assigned_identity.api.principal_id
-    ingest = azurerm_user_assigned_identity.ingest.principal_id
+    api        = azurerm_user_assigned_identity.api.principal_id
+    ingest     = azurerm_user_assigned_identity.ingest.principal_id
+    connectors = azurerm_user_assigned_identity.connectors.principal_id
+    actions    = azurerm_user_assigned_identity.actions.principal_id
   }
 }
 
 resource "azurerm_role_assignment" "kv_secrets_user" {
   for_each = local.kv_reader_identities
 
-  scope                = azurerm_key_vault.main.id
-  role_definition_name = "Key Vault Secrets User"
-  principal_id         = each.value
+  scope                            = azurerm_key_vault.main.id
+  role_definition_name             = "Key Vault Secrets User"
+  principal_id                     = each.value
+  skip_service_principal_aad_check = true
 }

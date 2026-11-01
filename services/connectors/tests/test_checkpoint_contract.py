@@ -149,6 +149,7 @@ class TestAdoptionIsCountedNotAssumed:
         "m365_audit": (("CreationTime",), ("Id",)),
         "aws_cloudtrail": (("EventTime",), ("EventId",)),
         "azure_activity": (("eventTimestamp",), ("eventDataId", "id")),
+        "microsoft_sentinel": (("lastModifiedTimeUtc",), ("name",)),
         # Depth plan 4.1. Reads an object store rather than a time-windowed
         # API, so the cursor is doing a different job: the store already
         # guarantees nothing is lost, and the cursor exists to drop the

@@ -110,7 +110,26 @@ class StepDispatchReport:
 #: Connector-instance settings a response action needs that are configuration
 #: rather than secrets, so they must not be encrypted at rest as though they
 #: were. Mirrors ``siem_writeback._operational_config``.
-_OPERATIONAL_KEYS = ("base_url", "region", "closing_reason_id", "owner", "owner_upn", "project_key", "instance_url")
+_OPERATIONAL_KEYS = (
+    "base_url",
+    "region",
+    "closing_reason_id",
+    "owner",
+    "owner_upn",
+    "project_key",
+    "instance_url",
+    # Microsoft Sentinel stores only the client secret in auth_config. These
+    # non-secret coordinates and the auth selector live in connector_config
+    # and must travel with it for either auth mode to build a writeback client.
+    "auth_mode",
+    "tenant_id",
+    "client_id",
+    "managed_identity_client_id",
+    "subscription_id",
+    "resource_group",
+    "workspace",
+    "workspace_name",
+)
 
 
 async def dispatch_step(

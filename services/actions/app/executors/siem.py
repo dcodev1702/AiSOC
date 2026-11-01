@@ -81,9 +81,11 @@ ELASTIC_CLIENT_PARAM_KEYS: tuple[str, ...] = (
 
 #: Every ``params`` key :func:`_sentinel_client` reads.
 SENTINEL_CLIENT_PARAM_KEYS: tuple[str, ...] = (
+    "sentinel_auth_mode",
     "sentinel_tenant_id",
     "sentinel_client_id",
     "sentinel_client_secret",
+    "sentinel_managed_identity_client_id",
     "sentinel_subscription_id",
     "sentinel_resource_group",
     "sentinel_workspace_name",
@@ -148,24 +150,29 @@ def _sentinel_client(params: dict) -> SentinelClient | None:
     would produce a URL that resolves to somebody else's workspace or to
     nothing, and neither is a failure mode worth guessing through.
     """
-    required = (
-        params.get("sentinel_tenant_id"),
-        params.get("sentinel_client_id"),
-        params.get("sentinel_client_secret"),
-        params.get("sentinel_subscription_id"),
-        params.get("sentinel_resource_group"),
-        params.get("sentinel_workspace_name"),
-    )
-    if not all(required):
+    auth_mode = str(params.get("sentinel_auth_mode") or "client_secret")
+    tenant = params.get("sentinel_tenant_id")
+    client_id = params.get("sentinel_client_id")
+    client_secret = params.get("sentinel_client_secret")
+    managed_identity_client_id = params.get("sentinel_managed_identity_client_id")
+    subscription = params.get("sentinel_subscription_id")
+    resource_group = params.get("sentinel_resource_group")
+    workspace = params.get("sentinel_workspace_name")
+    if not all((subscription, resource_group, workspace)):
         return None
-    tenant, client_id, client_secret, subscription, resource_group, workspace = required
+    if auth_mode == "client_secret" and not all((tenant, client_id, client_secret)):
+        return None
+    if auth_mode not in {"client_secret", "managed_identity"}:
+        return None
     return SentinelClient(
-        tenant_id=str(tenant),
-        client_id=str(client_id),
-        client_secret=str(client_secret),
+        tenant_id=str(tenant) if tenant else None,
+        client_id=str(client_id) if client_id else None,
+        client_secret=str(client_secret) if client_secret else None,
         subscription_id=str(subscription),
         resource_group=str(resource_group),
         workspace_name=str(workspace),
+        auth_mode=auth_mode,
+        managed_identity_client_id=(str(managed_identity_client_id) if managed_identity_client_id else None),
     )
 
 
@@ -1018,13 +1025,20 @@ class UpdateAlertDispositionExecutor(BaseExecutor):
             sentinel = _sentinel_client(params)
             if sentinel is None:
                 raise RuntimeError("sentinel credentials did not build a client")
-            if closing:
-                return await sentinel.close_incident(
+            try:
+                if closing:
+                    return await sentinel.close_incident(
+                        finding_id,
+                        classification=_SENTINEL_CLASSIFICATION[plan.disposition],
+                        comment=comment,
+                    )
+                return await sentinel.escalate_incident(
                     finding_id,
-                    classification=_SENTINEL_CLASSIFICATION[plan.disposition],
                     comment=comment,
+                    owner_upn=params.get("owner_upn"),
                 )
-            return await sentinel.escalate_incident(finding_id, comment=comment, owner_upn=params.get("owner_upn"))
+            finally:
+                await sentinel.close()
 
         if vendor == "qradar":
             qradar = _qradar_client(params)

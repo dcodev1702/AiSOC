@@ -382,6 +382,11 @@ async def test_connector_connection(connector_id: str, payload: TestConnectionRe
         # error formats to deal with.
         logger.exception("connector.test.runtime_error", connector_id=_safe_log_val(connector_id))
         result = {"success": False, "connector": connector_id, "error": "Connection test failed"}
+    finally:
+        try:
+            await connector.close()
+        except Exception:  # pragma: no cover - best-effort teardown
+            logger.exception("connector.test.close_error", connector_id=_safe_log_val(connector_id))
 
     if not isinstance(result, dict):
         # Defensive: some connectors might return None on success. Coerce.
@@ -631,6 +636,11 @@ async def run_federated_query(connector_id: str, payload: FederatedQueryRequest)
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Backend query failed. Check connector configuration and connectivity.",
         ) from exc
+    finally:
+        try:
+            await connector.close()
+        except Exception:  # pragma: no cover - best-effort teardown
+            logger.exception("connector.query.close_error", connector_id=_safe_log_val(connector_id))
 
     return {
         "connector_id": connector_id,

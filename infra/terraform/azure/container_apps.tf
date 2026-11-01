@@ -77,6 +77,11 @@ resource "azurerm_container_app" "api" {
     identity            = azurerm_user_assigned_identity.api.id
     key_vault_secret_id = azurerm_key_vault_secret.redis_auth.id
   }
+  secret {
+    name                = "service-token"
+    identity            = azurerm_user_assigned_identity.api.id
+    key_vault_secret_id = azurerm_key_vault_secret.service_token.id
+  }
   dynamic "secret" {
     for_each = toset(var.openai_api_key == "" ? [] : ["openai"])
     content {
@@ -152,6 +157,14 @@ resource "azurerm_container_app" "api" {
         name  = "CORS_ORIGINS"
         value = var.cors_origins
       }
+      env {
+        name  = "CONNECTORS_SERVICE_URL"
+        value = "https://${azurerm_container_app.connectors.ingress[0].fqdn}"
+      }
+      env {
+        name  = "AISOC_ACTIONS_BASE_URL"
+        value = "https://${azurerm_container_app.actions.ingress[0].fqdn}"
+      }
 
       # ── Secret-backed env ────────────────────────────────────────────────────
       env {
@@ -173,6 +186,14 @@ resource "azurerm_container_app" "api" {
       env {
         name        = "REDIS_PASSWORD"
         secret_name = "redis-auth"
+      }
+      env {
+        name        = "AISOC_SERVICE_TOKEN"
+        secret_name = "service-token"
+      }
+      env {
+        name        = "AISOC_ACTIONS_SERVICE_TOKEN"
+        secret_name = "service-token"
       }
       dynamic "env" {
         for_each = toset(var.openai_api_key == "" ? [] : ["openai"])
@@ -283,6 +304,11 @@ resource "azurerm_container_app" "ingest" {
     identity            = azurerm_user_assigned_identity.ingest.id
     key_vault_secret_id = azurerm_key_vault_secret.redis_auth.id
   }
+  secret {
+    name                = "service-token"
+    identity            = azurerm_user_assigned_identity.ingest.id
+    key_vault_secret_id = azurerm_key_vault_secret.service_token.id
+  }
 
   ingress {
     external_enabled = true
@@ -353,6 +379,10 @@ resource "azurerm_container_app" "ingest" {
       env {
         name        = "REDIS_PASSWORD"
         secret_name = "redis-auth"
+      }
+      env {
+        name        = "AISOC_SERVICE_TOKEN"
+        secret_name = "service-token"
       }
     }
   }

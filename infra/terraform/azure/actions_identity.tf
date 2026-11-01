@@ -2,10 +2,9 @@
 # Terraform: dedicated user-assigned managed identity for the AiSOC actions
 # Container App, with Sentinel Responder at RG scope.
 #
-# Pair with 03-container_apps_identity.tf (which handles the connectors app's
-# reader identity). Writeback runs on the actions app, which is a separate
-# Container App with a separate identity so a leaked connectors token cannot
-# close incidents and a leaked actions token cannot read them.
+# Writeback runs on a separate Container App and identity so a compromised
+# connectors token cannot close incidents. The actions identity can read and
+# manage incidents, but only within the configured Sentinel resource group.
 #
 # Prerequisite: the matching Sentinel workspace lives in <sentinel_rg_name>
 # in <sentinel_subscription_id>; the provider alias is already declared.
@@ -19,6 +18,7 @@ resource "azurerm_user_assigned_identity" "actions" {
   name                = "${var.name_prefix}-actions"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
+  tags                = var.tags
 }
 
 ###############################################################################
@@ -27,27 +27,23 @@ resource "azurerm_user_assigned_identity" "actions" {
 # Scope mirrors the connectors reader: Sentinel's own RG, which can live in
 # a different subscription from the AiSOC deployment. Responder includes
 # everything Reader does, so the actions app can also fetch an incident for
-# its "read before PATCH" step — PATCH replaces ``properties`` wholesale.
+# its "read before PATCH" step — the connector identity cannot write, while
+# this action identity can read and manage incidents.
 ###############################################################################
 
 resource "azurerm_role_assignment" "actions_sentinel_responder" {
-  provider             = azurerm.sentinel_subscription
-  scope                = data.azurerm_resource_group.sentinel.id
-  role_definition_name = "Microsoft Sentinel Responder"
-  principal_id         = azurerm_user_assigned_identity.actions.principal_id
-
-  depends_on = [azurerm_user_assigned_identity.actions]
+  provider                         = azurerm.sentinel_subscription
+  scope                            = data.azurerm_resource_group.sentinel.id
+  role_definition_name             = "Microsoft Sentinel Responder"
+  principal_id                     = azurerm_user_assigned_identity.actions.principal_id
+  skip_service_principal_aad_check = true
 }
 
 ###############################################################################
 # Actions Container App.
 #
-# No AZURE_CLIENT_ID / AZURE_TENANT_ID exported here. The actions service
-# constructs ``SentinelClient`` per request from the saved connector row's
-# parameters, and the row carries ``sentinel_managed_identity_client_id``
-# directly. That means one actions app can serve several tenants each with
-# its own identity should that ever be useful, instead of baking a single
-# identity into the process environment.
+# The identity client ID is deployment-controlled so action parameters cannot
+# select a different identity attached to the app.
 ###############################################################################
 
 resource "azurerm_container_app" "actions" {
@@ -55,6 +51,7 @@ resource "azurerm_container_app" "actions" {
   container_app_environment_id = azurerm_container_app_environment.main.id
   resource_group_name          = azurerm_resource_group.main.name
   revision_mode                = "Single"
+  tags                         = var.tags
 
   identity {
     type         = "UserAssigned"
@@ -64,6 +61,38 @@ resource "azurerm_container_app" "actions" {
   registry {
     server   = azurerm_container_registry.main.login_server
     identity = azurerm_user_assigned_identity.actions.id
+  }
+
+  secret {
+    name                = "database-url"
+    identity            = azurerm_user_assigned_identity.actions.id
+    key_vault_secret_id = azurerm_key_vault_secret.database_url.id
+  }
+  secret {
+    name                = "credential-key"
+    identity            = azurerm_user_assigned_identity.actions.id
+    key_vault_secret_id = azurerm_key_vault_secret.credential_key.id
+  }
+  secret {
+    name                = "secret-key"
+    identity            = azurerm_user_assigned_identity.actions.id
+    key_vault_secret_id = azurerm_key_vault_secret.secret_key.id
+  }
+  secret {
+    name                = "service-token"
+    identity            = azurerm_user_assigned_identity.actions.id
+    key_vault_secret_id = azurerm_key_vault_secret.service_token.id
+  }
+
+  ingress {
+    external_enabled = false
+    target_port      = 8085
+    transport        = "auto"
+
+    traffic_weight {
+      latest_revision = true
+      percentage      = 100
+    }
   }
 
   template {
@@ -80,6 +109,38 @@ resource "azurerm_container_app" "actions" {
         name  = "AISOC_ACTIONS_IDENTITY_CLIENT_ID"
         value = azurerm_user_assigned_identity.actions.client_id
       }
+      env {
+        name  = "AISOC_DEPLOYMENT"
+        value = "azure-containerapps"
+      }
+      env {
+        name  = "PORT"
+        value = "8085"
+      }
+      env {
+        name        = "DATABASE_URL"
+        secret_name = "database-url"
+      }
+      env {
+        name        = "AISOC_CREDENTIAL_KEY"
+        secret_name = "credential-key"
+      }
+      env {
+        name        = "SECRET_KEY"
+        secret_name = "secret-key"
+      }
+      env {
+        name        = "AISOC_SERVICE_TOKEN"
+        secret_name = "service-token"
+      }
+      env {
+        name        = "AISOC_ACTIONS_SERVICE_TOKEN"
+        secret_name = "service-token"
+      }
+      env {
+        name        = "AISOC_API_SERVICE_TOKEN"
+        secret_name = "service-token"
+      }
       # The approval path depends on these being set — leaving the chatops
       # approver map unset refuses every Slack / Teams / email approval
       # with a 403, which is the right default when nothing has been
@@ -90,6 +151,13 @@ resource "azurerm_container_app" "actions" {
       }
     }
   }
+
+  depends_on = [
+    azurerm_role_assignment.acr_pull,
+    azurerm_role_assignment.kv_secrets_user,
+    azurerm_role_assignment.actions_sentinel_responder,
+    azurerm_postgresql_flexible_server_database.aisoc,
+  ]
 }
 
 ###############################################################################
@@ -98,7 +166,7 @@ resource "azurerm_container_app" "actions" {
 
 output "actions_identity_client_id" {
   value       = azurerm_user_assigned_identity.actions.client_id
-  description = "Paste this into the response-action's writeback credentials as 'sentinel_managed_identity_client_id'."
+  description = "Deployment-pinned client ID used by the actions service."
 }
 
 output "actions_identity_principal_id" {

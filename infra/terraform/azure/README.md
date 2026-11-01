@@ -3,22 +3,22 @@
 A serverless-first deployment of the AiSOC stack on Microsoft Azure, mirroring
 the [GCP skeleton](../gcp/README.md):
 
-- **Azure Container Apps** for the API (FastAPI), web console (Next.js), and
-  ingest gateway
+- **Azure Container Apps** for the API, web console, ingest gateway,
+  connectors scheduler, and governed actions service
 - **Azure Database for PostgreSQL Flexible Server 16** for the application
   database (VNet-integrated private access, no public endpoint)
 - **Azure Cache for Redis** for queues, rate limits, and websocket fan-out
   (private endpoint, TLS-only)
-- **Azure Key Vault** for the application secrets (DB password, `SECRET_KEY`,
-  `AISOC_CREDENTIAL_KEY`, Redis auth, optional `OPENAI_API_KEY`)
+- **Azure Key Vault** for application secrets, service-to-service tokens, and
+  the shared async database URL
 - **Azure Container Registry** as the registry CI pushes to
 - **User-assigned managed identities** so each Container App pulls its own
   image and reads only the secrets it needs — no registry passwords or
   connection strings on disk
 
-> This is the **skeleton** — a buyer-friendly starting point that runs the
-> three customer-visible services. Long-running workloads (`agents`,
-> `realtime`, `connectors`, `threatintel`, `alert-fusion`, `fusion`) need
+> This is the **skeleton** — a buyer-friendly starting point that includes the
+> Sentinel polling and writeback path. Other long-running workloads (`agents`,
+> `realtime`, `threatintel`, `alert-fusion`, `fusion`) need
 > always-on compute and are deferred to a follow-up plan. See
 > [Limitations](#limitations).
 
@@ -36,6 +36,8 @@ infra/terraform/azure/
 ├── secrets.tf               ← Key Vault + generated/optional secret values
 ├── iam.tf                   ← per-service managed identities + role assignments
 ├── container_apps.tf        ← api / web / ingest Container Apps
+├── connectors_identity.tf   ← connectors app + Sentinel Reader identity
+├── actions_identity.tf      ← actions app + Sentinel Responder identity
 ├── outputs.tf               ← URLs, connection targets, identity + vault IDs
 └── terraform.tfvars.example ← copy → terraform.tfvars and override
 ```
@@ -52,15 +54,32 @@ into modules when you start running multiple environments off the same code.
    the subscription (the apply wires AcrPull + Key Vault Secrets User itself).
 3. **Terraform 1.5+** and the `azurerm` 3.116 provider (the lockfile pins the
    exact versions on first `init`).
-4. (Optional) **A storage account for remote state** — recommended for anything
+4. **Required Azure resource providers already registered.** The providers set
+   `skip_provider_registration = true` so a read-only `terraform plan` cannot
+   change subscription-wide provider state. Register the services once before
+   the first apply:
+   ```bash
+   for namespace in \
+     Microsoft.App Microsoft.Authorization Microsoft.Cache \
+     Microsoft.ContainerRegistry Microsoft.DBforPostgreSQL \
+     Microsoft.KeyVault Microsoft.ManagedIdentity Microsoft.Network \
+     Microsoft.OperationalInsights; do
+     az provider register --namespace "$namespace" --wait
+   done
+   ```
+5. (Optional) **A storage account for remote state** — recommended for anything
    beyond a personal sandbox; see *State backend* below.
+6. **An existing Log Analytics workspace with Microsoft Sentinel enabled** in
+   the same Entra tenant. Set `sentinel_rg_name`; set
+   `sentinel_subscription_id` only when it differs from the deployment
+   subscription.
 
 ## Quick start
 
 ```bash
 cd infra/terraform/azure
 cp terraform.tfvars.example terraform.tfvars
-$EDITOR terraform.tfvars            # optional — defaults already work
+$EDITOR terraform.tfvars            # set the Sentinel resource group
 
 az login
 az account set --subscription <subscription-id>
@@ -70,10 +89,11 @@ terraform plan -out tfplan          # review the proposed plan
 terraform apply tfplan
 ```
 
-A full apply against an empty subscription takes ~15 minutes — most of that is
+A full apply takes ~15 minutes — most of that is
 the Postgres Flexible Server and the Redis private endpoint. After apply, the
 `api_url`, `web_url`, and `ingest_url` outputs are publicly reachable
-immediately (Container Apps ingress issues a managed TLS cert per service).
+immediately. The connectors and actions apps use internal ingress and are
+reached by the API service.
 
 ## State backend
 
@@ -101,7 +121,7 @@ For anything shared across operators, use an Azure Storage backend:
 ## Container images
 
 The defaults point at the public GHCR demo images
-(`ghcr.io/beenuar/aisoc-{api,web,ingest}:latest`) so the skeleton runs with
+(`ghcr.io/beenuar/aisoc-*:latest`) so the skeleton runs with
 zero CI work. For a real deployment, push your own images to the ACR this stack
 provisions:
 
@@ -111,12 +131,14 @@ az acr login --name "${ACR%%.*}"
 
 docker build -t $ACR/api:$(git rev-parse --short HEAD)    services/api
 docker push     $ACR/api:$(git rev-parse --short HEAD)
-# repeat for web + ingest
+# repeat for web, ingest, connectors, and actions
 
 terraform apply \
   -var "api_image=$ACR/api:<sha>" \
   -var "web_image=$ACR/web:<sha>" \
-  -var "ingest_image=$ACR/ingest:<sha>"
+  -var "ingest_image=$ACR/ingest:<sha>" \
+  -var "connectors_image=$ACR/connectors:<sha>" \
+  -var "actions_image=$ACR/actions:<sha>"
 ```
 
 The managed identities already hold `AcrPull`, so no registry admin user or
@@ -155,9 +177,9 @@ For the cheapest sandbox set `postgres_sku = "B_Standard_B1ms"` and
 
 This is the **skeleton**, not the full migration. Known gaps:
 
-- **No long-running services.** `services/agents`, `services/realtime`,
-  `services/connectors`, `services/fusion`, `services/threatintel`, and
-  `services/fusion` need always-on compute. Run them as dedicated Container
+- **Some long-running services are omitted.** `services/agents`,
+  `services/realtime`, `services/fusion`, and `services/threatintel` need
+  always-on compute. Run them as dedicated Container
   Apps with `min_replicas > 0` (KEDA can still scale on queue depth) or move
   them to AKS sharing this VNet, Postgres, and Redis.
 - **Redis is TLS-only.** The non-SSL port is disabled, so the apps connect on

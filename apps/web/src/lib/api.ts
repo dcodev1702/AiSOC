@@ -3282,6 +3282,7 @@ export interface ConnectorSchemaField {
   placeholder?: string;
   help_text?: string;
   options?: Array<{ value: string; label: string }>;
+  visible_when?: Record<string, string | number | boolean>;
 }
 
 /** Forward-looking OAuth hints; rendered as "Hosted OAuth coming soon". */

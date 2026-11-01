@@ -1,60 +1,11 @@
-"""
-Microsoft Sentinel connector — patched to support Azure user-assigned managed
-identity in addition to the existing client-credentials (app registration +
-secret) auth mode.
-
-What changed from upstream (services/connectors/app/connectors/microsoft_sentinel.py):
-
-1. **Auth is pluggable per connector instance.** A new ``auth_mode`` field
-   selects between ``client_secret`` (upstream default, unchanged on the
-   wire) and ``managed_identity`` (new).
-
-2. **Managed-identity path uses azure-identity.** When ``auth_mode`` is
-   ``managed_identity`` the connector resolves tokens from the Container App's
-   IMDS endpoint via ``azure.identity.aio.ManagedIdentityCredential``. The
-   user-assigned identity is named explicitly by its ``client_id`` because
-   Microsoft Learn's Container Apps managed-identity doc says a request that
-   omits the ID silently falls through to a system-assigned identity, which
-   may or may not exist.
-
-3. **Token audience is now per-API.** Upstream reused one management-scoped
-   token for both ``fetch_alerts`` (which hits ARM) and ``query`` (which
-   hits Log Analytics). Log Analytics rejects a management token with
-   ``InvalidAuthenticationTokenAudience``. We request two tokens:
-
-   - ``https://management.azure.com/.default`` for ARM / Security Insights.
-   - ``https://api.loganalytics.io/.default`` for Log Analytics queries.
-
-4. **Access tokens cache with expiry.** Upstream cached a bearer string with
-   no expiry check; a long-lived connector would eventually fail with 401
-   until the ``if resp.status_code == 401`` fallback refreshed it. We cache
-   ``AccessToken`` and refresh ~60s before ``expires_on``.
-
-5. **Workspace ID is now a schema field.** Log Analytics queries address a
-   workspace by its GUID ID, not by its Azure resource name. Upstream
-   substituted the workspace *name* into the Log Analytics URL, which only
-   works when name == ID by accident. New optional ``workspace_id`` field
-   drives ``/v1/workspaces/{id}/query``; when absent the connector falls
-   back to the old (broken) behaviour so an upgrade cannot regress a
-   deployment that was somehow relying on it, but prints a loud warning.
-
-6. **Pagination over ``nextLink``.** Upstream capped incident reads at the
-   first 100 results of each poll. We follow ``nextLink`` with a per-poll
-   budget so a busy workspace cannot silently drop incidents.
-
-Backwards compatibility: a connector row saved under upstream (no
-``auth_mode``, with a non-empty ``client_secret``) continues to work
-unchanged. The console form's "Client Secret" field becomes optional.
-
-File intended location:
-  services/connectors/app/connectors/microsoft_sentinel.py
-"""
+"""Microsoft Sentinel incident polling and Log Analytics search."""
 
 from __future__ import annotations
 
-import logging
-from datetime import UTC, datetime, timedelta, timezone
+import os
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import httpx
 import structlog
@@ -68,11 +19,13 @@ from app.federated.translators import to_kql
 # without the package installed.
 try:  # pragma: no cover - exercised in managed-identity CI only
     from azure.core.credentials_async import AsyncTokenCredential
-    from azure.identity.aio import ManagedIdentityCredential
+    from azure.identity.aio import ManagedIdentityCredential, WorkloadIdentityCredential
+
     _AZURE_IDENTITY_AVAILABLE = True
 except ImportError:  # pragma: no cover
     AsyncTokenCredential = Any  # type: ignore[assignment,misc]
     ManagedIdentityCredential = None  # type: ignore[assignment,misc]
+    WorkloadIdentityCredential = None  # type: ignore[assignment,misc]
     _AZURE_IDENTITY_AVAILABLE = False
 
 logger = structlog.get_logger()
@@ -86,7 +39,12 @@ _SENTINEL_API = (
     "/providers/Microsoft.OperationalInsights/workspaces/{workspace}"
     "/providers/Microsoft.SecurityInsights/incidents"
 )
-_LOGS_API = "https://api.loganalytics.io/v1/workspaces/{workspace_id}/query"
+_WORKSPACE_API = (
+    "https://management.azure.com/subscriptions/{sub_id}/resourceGroups/{rg}/providers/Microsoft.OperationalInsights/workspaces/{workspace}"
+)
+_LOGS_API = "https://api.loganalytics.azure.com/v1/workspaces/{workspace_id}/query"
+_SENTINEL_API_VERSION = "2025-09-01"
+_WORKSPACE_API_VERSION = "2025-02-01"
 
 # Per-API audience scopes. Upstream used a single management-scoped token for
 # both; Log Analytics rejects it with InvalidAuthenticationTokenAudience.
@@ -106,6 +64,18 @@ _PAGE_SIZE = 100
 _POLL_BUDGET = 1000
 
 AuthMode = Literal["client_secret", "managed_identity"]
+
+
+def _validated_arm_next_link(value: Any) -> str | None:
+    """Return an ARM continuation URL without risking bearer-token disclosure."""
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError("Sentinel nextLink must be a string")
+    parsed = urlsplit(value)
+    if parsed.scheme != "https" or parsed.netloc != "management.azure.com":
+        raise ValueError("Sentinel nextLink must use https://management.azure.com")
+    return value
 
 
 class _CachedToken:
@@ -132,21 +102,20 @@ class MicrosoftSentinelConnector(BaseConnector):
 
     Two auth modes:
 
-    * ``client_secret`` (default, unchanged from upstream): Entra app
-      registration with a client secret. All six legacy fields are required.
+    * ``client_secret`` (default): Entra app registration with a client
+      secret. Tenant ID, client ID, and client secret are required.
 
-    * ``managed_identity``: for AiSOC services running on Azure compute (Container
-      Apps, AKS workload-identity, VMs). The connector reads tokens from the
-      platform's IMDS endpoint using the user-assigned identity named by
-      ``managed_identity_client_id``. ``client_secret`` is ignored; ``client_id``
-      is ignored. The tenant comes from the identity itself, so ``tenant_id``
-      becomes optional too (kept in the schema for symmetry).
+    * ``managed_identity``: for AiSOC services running on Azure compute
+      (Container Apps, AKS workload identity, VMs). The deployment pins the
+      user-assigned identity; a connector row cannot select another one.
     """
 
     connector_id = "microsoft_sentinel"
     connector_name = "Microsoft Sentinel"
     connector_category = "siem"
     supports_federated_search = True
+    checkpoint_time_field = ("lastModifiedTimeUtc",)
+    checkpoint_id_field = ("name",)
 
     @classmethod
     def schema(cls) -> ConnectorSchema:
@@ -161,10 +130,10 @@ class MicrosoftSentinelConnector(BaseConnector):
             ),
             docs_url="/docs/connectors/microsoft-sentinel",
             fields=[
-                # New: auth mode selector. Default preserves upstream behaviour.
+                # Default preserves client-secret behaviour for existing rows.
                 Field(
                     "auth_mode",
-                    "enum",
+                    "select",
                     "Authentication mode",
                     required=False,
                     default="client_secret",
@@ -173,47 +142,34 @@ class MicrosoftSentinelConnector(BaseConnector):
                         "or 'managed_identity' when running on Azure Container "
                         "Apps / AKS with a user-assigned managed identity."
                     ),
-                    # Enum members surface as a dropdown in the console form.
-                    # If the Field dataclass in this repo doesn't support
-                    # ``options`` yet, add it there; the UI uses an enum select
-                    # already for the connector-type picker on the same page.
-                    options=["client_secret", "managed_identity"],
+                    options=[
+                        {"value": "client_secret", "label": "Client secret"},
+                        {"value": "managed_identity", "label": "Managed identity"},
+                    ],
                 ),
-                # Legacy fields — required only in client_secret mode. The
-                # console form validates conditionally; the Python side
-                # enforces presence in __init__ below.
-                Field("tenant_id", "string", "Tenant ID", required=False),
-                Field("client_id", "string", "Client ID", required=False),
-                Field("client_secret", "secret", "Client Secret", required=False),
-                # New: identity client ID when auth_mode == managed_identity.
+                # These fields are required whenever they are visible. The
+                # managed-identity selection hides and omits them entirely.
                 Field(
-                    "managed_identity_client_id",
+                    "tenant_id",
                     "string",
-                    "Managed Identity Client ID",
-                    required=False,
-                    help_text=(
-                        "The clientId of the user-assigned managed identity "
-                        "attached to this container app. Not the principalId, "
-                        "and not the identity's resource ID."
-                    ),
+                    "Tenant ID",
+                    visible_when={"auth_mode": "client_secret"},
+                ),
+                Field(
+                    "client_id",
+                    "string",
+                    "Client ID",
+                    visible_when={"auth_mode": "client_secret"},
+                ),
+                Field(
+                    "client_secret",
+                    "secret",
+                    "Client Secret",
+                    visible_when={"auth_mode": "client_secret"},
                 ),
                 Field("subscription_id", "string", "Subscription ID"),
                 Field("resource_group", "string", "Resource Group"),
                 Field("workspace", "string", "Workspace Name"),
-                # New: Log Analytics workspace ID (GUID) used only by federated
-                # KQL search. Optional for incident pull; required if you want
-                # /federated-search to work against Sentinel.
-                Field(
-                    "workspace_id",
-                    "string",
-                    "Log Analytics Workspace ID (GUID)",
-                    required=False,
-                    help_text=(
-                        "Portal: Log Analytics workspace → Overview → "
-                        "'Workspace ID'. Needed for KQL federated search; "
-                        "unused for incident pull."
-                    ),
-                ),
             ],
         )
 
@@ -240,10 +196,8 @@ class MicrosoftSentinelConnector(BaseConnector):
         self._workspace_id = workspace_id
         self._auth_mode: AuthMode = auth_mode
 
-        # Validate the auth-mode-specific inputs up front so a misconfigured
-        # connector fails at save time rather than at first poll. The console
-        # already renders the connector-row banner on a ValueError raised in
-        # __init__.
+        # Validate mode-specific inputs at construction as a second boundary
+        # behind the schema-driven console validation.
         if auth_mode == "client_secret":
             missing = [
                 name
@@ -255,10 +209,7 @@ class MicrosoftSentinelConnector(BaseConnector):
                 if not value
             ]
             if missing:
-                raise ValueError(
-                    "microsoft_sentinel: auth_mode=client_secret requires "
-                    f"{', '.join(missing)}"
-                )
+                raise ValueError(f"microsoft_sentinel: auth_mode=client_secret requires {', '.join(missing)}")
         elif auth_mode == "managed_identity":
             if not _AZURE_IDENTITY_AVAILABLE:
                 raise ValueError(
@@ -266,17 +217,16 @@ class MicrosoftSentinelConnector(BaseConnector):
                     "the azure-identity package. Add 'azure-identity' to "
                     "services/connectors/pyproject.toml."
                 )
+            deployment_client_id = os.getenv("AISOC_CONNECTORS_IDENTITY_CLIENT_ID")
+            workload_client_id = os.getenv("AZURE_CLIENT_ID") if os.getenv("AZURE_FEDERATED_TOKEN_FILE") else None
+            pinned_client_id = deployment_client_id or workload_client_id
+            if pinned_client_id and managed_identity_client_id and managed_identity_client_id != pinned_client_id:
+                raise ValueError("microsoft_sentinel: configured managed identity does not match the identity assigned to this deployment")
+            managed_identity_client_id = pinned_client_id or managed_identity_client_id
             if not managed_identity_client_id:
-                raise ValueError(
-                    "microsoft_sentinel: auth_mode=managed_identity requires "
-                    "managed_identity_client_id (the user-assigned identity's "
-                    "clientId, not its principalId)."
-                )
+                raise ValueError("microsoft_sentinel: managed identity client ID is not configured by the deployment")
         else:
-            raise ValueError(
-                f"microsoft_sentinel: unknown auth_mode={auth_mode!r}; "
-                "expected 'client_secret' or 'managed_identity'"
-            )
+            raise ValueError(f"microsoft_sentinel: unknown auth_mode={auth_mode!r}; expected 'client_secret' or 'managed_identity'")
 
         self._tenant_id = tenant_id
         self._client_id = client_id
@@ -288,7 +238,8 @@ class MicrosoftSentinelConnector(BaseConnector):
 
         # Lazy-constructed ManagedIdentityCredential; shared across both scope
         # requests so the SDK's internal connection pool is reused.
-        self._mi_credential: ManagedIdentityCredential | None = None
+        self._mi_credential: AsyncTokenCredential | None = None
+        self._resume_next_link: str | None = None
 
     # ------------------------------------------------------------------
     # Token acquisition
@@ -335,15 +286,22 @@ class MicrosoftSentinelConnector(BaseConnector):
         return _CachedToken(token=payload["access_token"], expires_on=expires_on)
 
     async def _fetch_token_managed_identity(self, scope: str) -> _CachedToken:
-        """IMDS flow via ``azure-identity``. Lazy-opens the credential."""
-        assert ManagedIdentityCredential is not None  # import guard
+        """Acquire a token from Container Apps or an AKS workload identity."""
         if self._mi_credential is None:
-            # Named by client_id because Microsoft Learn's Container Apps doc
-            # says omitting an identifier falls back to a system-assigned
-            # identity, which this connector never wants.
-            self._mi_credential = ManagedIdentityCredential(
-                client_id=self._mi_client_id
-            )
+            token_file = os.getenv("AZURE_FEDERATED_TOKEN_FILE")
+            if token_file:
+                assert WorkloadIdentityCredential is not None
+                tenant_id = os.getenv("AZURE_TENANT_ID")
+                if not tenant_id:
+                    raise ValueError("microsoft_sentinel: AZURE_TENANT_ID is required for AKS workload identity")
+                self._mi_credential = WorkloadIdentityCredential(
+                    tenant_id=tenant_id,
+                    client_id=self._mi_client_id,
+                    token_file_path=token_file,
+                )
+            else:
+                assert ManagedIdentityCredential is not None
+                self._mi_credential = ManagedIdentityCredential(client_id=self._mi_client_id)
         # ``get_token`` returns an ``AccessToken`` with ``expires_on`` as a
         # unix timestamp. The SDK handles IMDS retries and the per-platform
         # endpoint difference (Container Apps vs VM IMDS) for us.
@@ -353,13 +311,47 @@ class MicrosoftSentinelConnector(BaseConnector):
     async def close(self) -> None:
         """Release the managed-identity credential, if any.
 
-        The connector scheduler calls this on shutdown and on config reload
-        (``services/connectors/app/scheduler.py`` tears a job down before
-        rebuilding it when a row changes).
+        The connector scheduler invokes this after every poll; stateless API
+        routes also call it at the end of each request.
         """
         if self._mi_credential is not None:
             await self._mi_credential.close()
             self._mi_credential = None
+
+    def set_checkpoint(self, checkpoint: dict[str, Any] | None) -> None:
+        super().set_checkpoint(checkpoint)
+        self._resume_next_link = None
+        if isinstance(checkpoint, dict):
+            next_link = checkpoint.get("sentinel_next_link")
+            self._resume_next_link = _validated_arm_next_link(next_link)
+
+    def _row_time(self, row: dict[str, Any]) -> str:
+        return str((row.get("properties") or {}).get("lastModifiedTimeUtc") or "")
+
+    def _row_id(self, row: dict[str, Any]) -> str:
+        return str(row.get("name") or "")
+
+    async def _resolve_workspace_id(self) -> str:
+        if self._workspace_id:
+            return self._workspace_id
+        token = await self._get_token(_SCOPE_ARM)
+        url = _WORKSPACE_API.format(
+            sub_id=self._subscription_id,
+            rg=self._resource_group,
+            workspace=self._workspace,
+        )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                params={"api-version": _WORKSPACE_API_VERSION},
+            )
+            response.raise_for_status()
+            workspace_id = str((response.json().get("properties") or {}).get("customerId") or "")
+        if not workspace_id:
+            raise ValueError("Sentinel workspace response did not include properties.customerId")
+        self._workspace_id = workspace_id
+        return workspace_id
 
     # ------------------------------------------------------------------
     # Public connector surface
@@ -381,13 +373,21 @@ class MicrosoftSentinelConnector(BaseConnector):
                 rg=self._resource_group,
                 workspace=self._workspace,
             )
+            workspace_id = await self._resolve_workspace_id()
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(
                     api_url,
                     headers={"Authorization": f"Bearer {token}"},
-                    params={"api-version": "2022-12-01-preview", "$top": 1},
+                    params={"api-version": _SENTINEL_API_VERSION, "$top": 1},
                 )
                 resp.raise_for_status()
+                logs_token = await self._get_token(_SCOPE_LOGS)
+                logs_response = await client.post(
+                    _LOGS_API.format(workspace_id=workspace_id),
+                    headers={"Authorization": f"Bearer {logs_token}"},
+                    json={"query": "print Result=1"},
+                )
+                logs_response.raise_for_status()
             return {
                 "success": True,
                 "connector": self.connector_id,
@@ -418,23 +418,23 @@ class MicrosoftSentinelConnector(BaseConnector):
         re-tries on the next tick, which is the right loop for a transient.
         """
         token = await self._get_token(_SCOPE_ARM)
-        since = (
-            datetime.now(UTC) - timedelta(seconds=since_seconds)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        since = (datetime.now(UTC) - timedelta(seconds=since_seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
         api_url = _SENTINEL_API.format(
             sub_id=self._subscription_id,
             rg=self._resource_group,
             workspace=self._workspace,
         )
         params = {
-            "api-version": "2022-12-01-preview",
+            "api-version": _SENTINEL_API_VERSION,
             "$filter": f"properties/lastModifiedTimeUtc ge {since}",
+            "$orderby": "properties/lastModifiedTimeUtc asc",
             "$top": _PAGE_SIZE,
         }
 
         incidents: list[dict[str, Any]] = []
-        next_url: str | None = api_url
-        next_params: dict[str, Any] | None = params
+        was_resuming = self._resume_next_link is not None
+        next_url: str | None = self._resume_next_link or api_url
+        next_params: dict[str, Any] | None = None if self._resume_next_link else params
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             while next_url and len(incidents) < _POLL_BUDGET:
@@ -454,17 +454,28 @@ class MicrosoftSentinelConnector(BaseConnector):
                 # ``nextLink``, when present, already carries the paging
                 # cursor as a complete URL. Drop ``params`` on the next hop
                 # so we don't double-encode ``$skiptoken``.
-                next_url = page.get("nextLink")
+                next_url = _validated_arm_next_link(page.get("nextLink"))
                 next_params = None
 
-        if len(incidents) >= _POLL_BUDGET:
+        fresh = self.apply_checkpoint(incidents)
+        if next_url:
+            checkpoint = dict(self._next_checkpoint or self._incoming_checkpoint or {})
+            checkpoint["sentinel_next_link"] = next_url
+            self._next_checkpoint = checkpoint
             logger.warning(
                 "sentinel.fetch_alerts.budget_hit",
                 budget=_POLL_BUDGET,
                 workspace=self._workspace,
             )
+        elif was_resuming and self._next_checkpoint is None and self._incoming_checkpoint:
+            # An empty (or duplicate-only) final continuation page still
+            # needs to clear the stored nextLink. Re-stage the existing
+            # watermark so the scheduler persists the checkpoint without
+            # that exhausted cursor instead of replaying the same page on
+            # every poll forever.
+            self._next_checkpoint = dict(self._incoming_checkpoint)
 
-        return [self.normalize(i) for i in incidents]
+        return [self.normalize(i) for i in fresh]
 
     async def query(self, unified: UnifiedQuery) -> list[dict[str, Any]]:
         """KQL federated search via Log Analytics.
@@ -476,17 +487,10 @@ class MicrosoftSentinelConnector(BaseConnector):
         * Wrong workspace identifier. Upstream substituted the workspace
           *name* into the URL path; the API wants the workspace GUID.
 
-        If ``workspace_id`` isn't set the method falls back to the upstream
-        (broken) behaviour and logs a warning — safer than silently
-        succeeding on an un-upgraded connector row.
+        When ``workspace_id`` is not supplied, the connector resolves the
+        workspace's customer ID through Azure Resource Manager first.
         """
-        workspace_id = self._workspace_id or self._workspace
-        if not self._workspace_id:
-            logger.warning(
-                "sentinel.query.missing_workspace_id",
-                workspace=self._workspace,
-                hint="Set workspace_id (the Log Analytics GUID) in the connector row.",
-            )
+        workspace_id = await self._resolve_workspace_id()
 
         token = await self._get_token(_SCOPE_LOGS)
         kql = to_kql(unified, table="CommonSecurityLog")

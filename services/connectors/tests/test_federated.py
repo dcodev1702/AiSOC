@@ -297,9 +297,14 @@ async def test_sentinel_query_assembles_loganalytics_call(monkeypatch):
         subscription_id="sub-uuid",
         resource_group="rg",
         workspace="workspace-uuid",
+        workspace_id="workspace-uuid",
     )
+
     # Bypass the OAuth token mint so we go straight to the query.
-    connector._access_token = "fake-bearer"  # noqa: SLF001
+    async def _token(_scope: str) -> str:
+        return "fake-bearer"
+
+    monkeypatch.setattr(connector, "_get_token", _token)
 
     rows = await connector.query(_SAMPLE_QUERY)
     assert rows == [{"TimeGenerated": "2026-05-05T00:00:00Z", "UserPrincipalName": "alice@example.com"}]

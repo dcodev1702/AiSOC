@@ -63,6 +63,26 @@ def test_google_workspace_map():
     assert out == {"gws_service_account_key": "{...}", "gws_subject_email": "admin@corp.com"}
 
 
+def test_sentinel_managed_identity_fields_and_workspace_map():
+    out = resolve_params(
+        "microsoft_sentinel",
+        {
+            "auth_mode": "managed_identity",
+            "managed_identity_client_id": "identity-client-id",
+            "subscription_id": "sub",
+            "resource_group": "sentinel-rg",
+            "workspace": "drydock-law",
+        },
+    )
+    assert out == {
+        "sentinel_auth_mode": "managed_identity",
+        "sentinel_managed_identity_client_id": "identity-client-id",
+        "sentinel_subscription_id": "sub",
+        "sentinel_resource_group": "sentinel-rg",
+        "sentinel_workspace_name": "drydock-law",
+    }
+
+
 def test_unknown_field_is_dropped_not_forwarded():
     out = resolve_params("okta", {"domain": "d", "api_token": "t", "mystery_field": "boom"})
     assert "mystery_field" not in out

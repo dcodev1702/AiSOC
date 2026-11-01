@@ -161,8 +161,11 @@ async def _read_sentinel(body: HistoryRequest) -> list[ClosedFinding]:
     client = _sentinel_client(body.credentials)
     if client is None:
         raise _unusable("sentinel")
-    rows = await client.list_closed_incidents(body.since, body.until, limit=body.limit)
-    return [parse_sentinel_incident(row) for row in rows]
+    try:
+        rows = await client.list_closed_incidents(body.since, body.until, limit=body.limit)
+        return [parse_sentinel_incident(row) for row in rows]
+    finally:
+        await client.close()
 
 
 async def _read_elastic(body: HistoryRequest) -> list[ClosedFinding]:

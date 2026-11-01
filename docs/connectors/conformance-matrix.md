@@ -58,7 +58,7 @@
 | lacework | cloud | 4 | 1 | 5 | ✅ | ✅ | ✅ |
 | llm_usage | saas | 2 | 1 | 2 | ✅ | ✅ | ✅ |
 | m365_audit | saas | 3 | 1 | 1 | ✅ | ✅ | ✅ |
-| microsoft_sentinel | siem | 6 | 1 | 2 | ✅ | ✅ | ✅ |
+| microsoft_sentinel | siem | 7 | 1 | 2 | ✅ | ✅ | ✅ |
 | mimecast | saas | 3 | 1 | 4 | ✅ | ✅ | ✅ |
 | netskope | network | 3 | 1 | 3 | ✅ | ✅ | ✅ |
 | oci | cloud | 6 | 1 | 3 | ✅ | ✅ | ✅ |

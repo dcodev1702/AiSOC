@@ -9,7 +9,7 @@ description: Connect Microsoft Sentinel to AiSOC.
     schema(). Edit the schema, not this block. Prose between the HUMAN
     NOTES markers below is preserved across regeneration. */}
 
-Microsoft Sentinel incidents via the Azure Security Insights REST API.
+Microsoft Sentinel incidents via the Azure Security Insights REST API. Supports Entra app registration or Azure managed identity (when AiSOC runs on Azure compute).
 
 - **Connector id:** `microsoft_sentinel`
 - **Category:** siem
@@ -18,6 +18,7 @@ Microsoft Sentinel incidents via the Azure Security Insights REST API.
 
 | Field | Label | Type | Required | Default | Notes |
 |-------|-------|------|----------|---------|-------|
+| `auth_mode` | Authentication mode | select | no | `client_secret` | Use 'client_secret' with an Entra app registration, or 'managed_identity' when running on Azure Container Apps / AKS with a user-assigned managed identity. · one of: `client_secret`, `managed_identity` |
 | `tenant_id` | Tenant ID | string | yes | — | — |
 | `client_id` | Client ID | string | yes | — | — |
 | `client_secret` | Client Secret | secret | yes | — | **encrypted at rest** |
@@ -41,6 +42,41 @@ The first poll is the honest signal that the credential works. A connector that 
 
 <!-- BEGIN HUMAN NOTES -->
 
-_Vendor-specific setup notes go here: which console page issues the credential, which scopes to grant, rate limits, and anything the schema cannot express. This section is preserved when the page is regenerated._
+### Managed identity deployment
+
+Choose `managed_identity` only when the connectors and actions services run on
+Azure compute in the same Entra tenant as the Sentinel workspace. The identity
+client IDs are deployment settings, not tenant-editable connector fields:
+
+- `AISOC_CONNECTORS_IDENTITY_CLIENT_ID` pins the polling identity. Grant it
+  **Microsoft Sentinel Reader** on the resource group containing the workspace.
+- `AISOC_ACTIONS_IDENTITY_CLIENT_ID` pins the incident writeback identity.
+  Grant it **Microsoft Sentinel Responder** at the same scope.
+
+The Terraform Azure deployment creates separate user-assigned identities and
+these least-privilege assignments. The connectors identity cannot update an
+incident. The actions identity can read an incident before updating it, which
+the Sentinel incident API requires.
+
+For Azure Container Apps, attach the user-assigned identity to the Container
+App. For AKS, configure Microsoft Entra Workload ID so the pod receives
+`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_FEDERATED_TOKEN_FILE`. AiSOC
+uses `WorkloadIdentityCredential` when the projected token is present.
+
+The connection test performs a read-only incident-list request and a
+`print Result=1` Log Analytics query. This verifies the ARM role, workspace
+resolution, Log Analytics audience, and data-query access before the row is
+saved.
+
+### Client secret deployment
+
+Choose `client_secret` for an Entra app registration and supply Tenant ID,
+Client ID, and Client Secret. Those fields are hidden and omitted from the
+request when managed identity is selected. Subscription, resource group, and
+workspace name are required in both modes.
+
+Cross-tenant managed identity is intentionally unsupported. Use a tenant-bound
+application registration or a separately reviewed federation design instead
+of attaching multiple customer-selectable identities to one shared service.
 
 <!-- END HUMAN NOTES -->

@@ -39,6 +39,11 @@ resource "random_password" "realtime_jwt_secret" {
   special = false
 }
 
+resource "random_password" "service_token" {
+  length  = 64
+  special = false
+}
+
 # ─── Key Vault ───────────────────────────────────────────────────────────────
 #
 # RBAC-authorization mode (no access policies). The deploying principal gets
@@ -122,6 +127,30 @@ resource "azurerm_key_vault_secret" "realtime_jwt_secret" {
 resource "azurerm_key_vault_secret" "redis_auth" {
   name         = "redis-auth"
   value        = azurerm_redis_cache.main.primary_access_key
+  key_vault_id = azurerm_key_vault.main.id
+  tags         = var.tags
+
+  depends_on = [azurerm_role_assignment.deployer_secrets_officer]
+}
+
+resource "azurerm_key_vault_secret" "database_url" {
+  name = "database-url"
+  value = format(
+    "postgresql+asyncpg://%s:%s@%s:5432/%s?ssl=require",
+    var.postgres_user,
+    urlencode(random_password.postgres.result),
+    azurerm_postgresql_flexible_server.main.fqdn,
+    var.postgres_db_name,
+  )
+  key_vault_id = azurerm_key_vault.main.id
+  tags         = var.tags
+
+  depends_on = [azurerm_role_assignment.deployer_secrets_officer]
+}
+
+resource "azurerm_key_vault_secret" "service_token" {
+  name         = "service-token"
+  value        = random_password.service_token.result
   key_vault_id = azurerm_key_vault.main.id
   tags         = var.tags
 

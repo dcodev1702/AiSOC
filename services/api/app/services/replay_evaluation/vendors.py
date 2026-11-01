@@ -102,15 +102,16 @@ REPLAYABLE_CONNECTORS: dict[str, ReplayableConnector] = {
         connector_type="microsoft_sentinel",
         vendor="sentinel",
         label="Microsoft Sentinel",
-        auth_map={
+        auth_map={"client_secret": "sentinel_client_secret"},
+        config_map={
+            "auth_mode": "sentinel_auth_mode",
             "tenant_id": "sentinel_tenant_id",
             "client_id": "sentinel_client_id",
-            "client_secret": "sentinel_client_secret",
+            "managed_identity_client_id": "sentinel_managed_identity_client_id",
             "subscription_id": "sentinel_subscription_id",
             "resource_group": "sentinel_resource_group",
             "workspace": "sentinel_workspace_name",
         },
-        config_map={},
     ),
     "elastic": ReplayableConnector(
         connector_type="elastic",

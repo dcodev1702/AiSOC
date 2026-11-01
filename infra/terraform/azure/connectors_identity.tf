@@ -2,26 +2,11 @@
 # Terraform: dedicated user-assigned managed identity for the AiSOC connectors
 # Container App, with Sentinel Reader at RG scope.
 #
-# This file is a prototype addition to AiSOC's Azure skeleton
-# (infra/terraform/azure/). It intentionally defines a NEW connectors app
-# rather than editing the api/web/ingest set, because the upstream Terraform
-# does not yet include connectors, fusion, agents, actions, or threatintel.
-#
-# Pair with 03b_container_apps_identity_actions.tf for the writeback identity
-# on the actions Container App when you're ready to grant Responder.
+# The polling identity is separate from the writeback identity so compromise
+# of the connectors service cannot grant incident-management permissions.
 #
 # Prerequisite: the matching Sentinel workspace lives in <sentinel_rg_name>.
 ###############################################################################
-
-variable "sentinel_subscription_id" {
-  type        = string
-  description = "Subscription that owns the Sentinel workspace."
-}
-
-variable "sentinel_rg_name" {
-  type        = string
-  description = "Resource group that owns the Sentinel workspace. Role is granted at this scope — not at the subscription — so the connectors app can only read inside this RG."
-}
 
 ###############################################################################
 # User-assigned identity for the connectors app.
@@ -31,6 +16,7 @@ resource "azurerm_user_assigned_identity" "connectors" {
   name                = "${var.name_prefix}-connectors"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
+  tags                = var.tags
 }
 
 ###############################################################################
@@ -48,26 +34,19 @@ data "azurerm_resource_group" "sentinel" {
 }
 
 resource "azurerm_role_assignment" "connectors_sentinel_reader" {
-  provider             = azurerm.sentinel_subscription
-  scope                = data.azurerm_resource_group.sentinel.id
-  role_definition_name = "Microsoft Sentinel Reader"
-  principal_id         = azurerm_user_assigned_identity.connectors.principal_id
-
-  # The identity's principal ID is created a few seconds before Entra sees it
-  # consistently; without a dependency the first apply after a cold start
-  # fails with "principal not found" and succeeds on the next apply.
-  depends_on = [azurerm_user_assigned_identity.connectors]
+  provider                         = azurerm.sentinel_subscription
+  scope                            = data.azurerm_resource_group.sentinel.id
+  role_definition_name             = "Microsoft Sentinel Reader"
+  principal_id                     = azurerm_user_assigned_identity.connectors.principal_id
+  skip_service_principal_aad_check = true
 }
 
 ###############################################################################
 # Connectors Container App.
 #
-# Minimal shape; mirror from container_apps.tf for the fuller env block (DB,
-# Redis, Kafka). The identity-relevant pieces are:
-#   - identity.type = "UserAssigned"
-#   - identity.identity_ids holds the connectors identity resource ID
-#   - env vars make it visible to the Python layer (not strictly required —
-#     azure-identity reads IDENTITY_ENDPOINT itself — but useful for logs)
+# This service is always on because it owns the polling scheduler. The
+# deployment pins the identity client ID; a tenant-controlled connector row
+# cannot select another identity attached to the app.
 ###############################################################################
 
 resource "azurerm_container_app" "connectors" {
@@ -75,6 +54,7 @@ resource "azurerm_container_app" "connectors" {
   container_app_environment_id = azurerm_container_app_environment.main.id
   resource_group_name          = azurerm_resource_group.main.name
   revision_mode                = "Single"
+  tags                         = var.tags
 
   identity {
     type         = "UserAssigned"
@@ -84,6 +64,38 @@ resource "azurerm_container_app" "connectors" {
   registry {
     server   = azurerm_container_registry.main.login_server
     identity = azurerm_user_assigned_identity.connectors.id
+  }
+
+  secret {
+    name                = "database-url"
+    identity            = azurerm_user_assigned_identity.connectors.id
+    key_vault_secret_id = azurerm_key_vault_secret.database_url.id
+  }
+  secret {
+    name                = "credential-key"
+    identity            = azurerm_user_assigned_identity.connectors.id
+    key_vault_secret_id = azurerm_key_vault_secret.credential_key.id
+  }
+  secret {
+    name                = "secret-key"
+    identity            = azurerm_user_assigned_identity.connectors.id
+    key_vault_secret_id = azurerm_key_vault_secret.secret_key.id
+  }
+  secret {
+    name                = "service-token"
+    identity            = azurerm_user_assigned_identity.connectors.id
+    key_vault_secret_id = azurerm_key_vault_secret.service_token.id
+  }
+
+  ingress {
+    external_enabled = false
+    target_port      = 8087
+    transport        = "auto"
+
+    traffic_weight {
+      latest_revision = true
+      percentage      = 100
+    }
   }
 
   template {
@@ -99,31 +111,64 @@ resource "azurerm_container_app" "connectors" {
       cpu    = 0.5
       memory = "1Gi"
 
-      # No AZURE_CLIENT_ID / AZURE_TENANT_ID exported here. The patched
-      # connector reads ``managed_identity_client_id`` from the saved
-      # connector row (per Sentinel instance), not from process env, so one
-      # app can serve several tenants each with their own identity should
-      # that ever be useful. For now the identity ID is also exported for
-      # logging convenience.
       env {
         name  = "AISOC_CONNECTORS_IDENTITY_CLIENT_ID"
         value = azurerm_user_assigned_identity.connectors.client_id
       }
       env {
+        name  = "AISOC_DEPLOYMENT"
+        value = "azure-containerapps"
+      }
+      env {
+        name  = "ENVIRONMENT"
+        value = "production"
+      }
+      env {
+        name  = "PORT"
+        value = "8087"
+      }
+      env {
+        name  = "INGEST_SERVICE_URL"
+        value = "https://${azurerm_container_app.ingest.ingress[0].fqdn}"
+      }
+      env {
         name  = "AISOC_SCHEDULER_LEADER_ELECTION"
         value = "true"
       }
+      env {
+        name        = "DATABASE_URL"
+        secret_name = "database-url"
+      }
+      env {
+        name        = "AISOC_CREDENTIAL_KEY"
+        secret_name = "credential-key"
+      }
+      env {
+        name        = "SECRET_KEY"
+        secret_name = "secret-key"
+      }
+      env {
+        name        = "AISOC_SERVICE_TOKEN"
+        secret_name = "service-token"
+      }
     }
   }
+
+  depends_on = [
+    azurerm_role_assignment.acr_pull,
+    azurerm_role_assignment.kv_secrets_user,
+    azurerm_role_assignment.connectors_sentinel_reader,
+    azurerm_postgresql_flexible_server_database.aisoc,
+  ]
 }
 
 ###############################################################################
-# Outputs — the connectors identity's clientId is what the console form needs.
+# Outputs.
 ###############################################################################
 
 output "connectors_identity_client_id" {
   value       = azurerm_user_assigned_identity.connectors.client_id
-  description = "Paste this into the Sentinel connector's 'Managed Identity Client ID' field in the AiSOC console."
+  description = "Deployment-pinned client ID used by the connectors service."
 }
 
 output "connectors_identity_principal_id" {

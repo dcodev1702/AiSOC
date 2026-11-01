@@ -11,6 +11,10 @@
 # location        = "eastus"
 # name_prefix     = "aisoc"   # 3-12 lowercase chars; keeps ACR + Key Vault names valid
 
+# Existing Microsoft Sentinel workspace (same Entra tenant as this deployment).
+sentinel_rg_name = "replace-with-sentinel-resource-group"
+# sentinel_subscription_id = "00000000-0000-0000-0000-000000000000" # empty uses current subscription
+
 # tags = {
 #   project    = "aisoc"
 #   managed_by = "terraform"
@@ -47,6 +51,8 @@
 # api_image    = "ghcr.io/beenuar/aisoc-core-api:latest"
 # web_image    = "ghcr.io/beenuar/aisoc-web:latest"
 # ingest_image = "ghcr.io/beenuar/aisoc-ingest:latest"
+# connectors_image = "ghcr.io/beenuar/aisoc-connectors:latest"
+# actions_image    = "ghcr.io/beenuar/aisoc-actions:latest"
 
 # ─── Container Apps scaling ──────────────────────────────────────────────────
 

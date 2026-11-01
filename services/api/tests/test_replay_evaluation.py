@@ -77,6 +77,25 @@ class TestCredentialTranslation:
         # verification against a certificate that will not validate.
         assert credentials["splunk_verify_ssl"] is False
 
+    def test_sentinel_managed_identity_config_reaches_the_reader(self) -> None:
+        credentials = credentials_for(
+            "microsoft_sentinel",
+            {},
+            {
+                "auth_mode": "managed_identity",
+                "subscription_id": "sub",
+                "resource_group": "sentinel-rg",
+                "workspace": "drydock-law",
+            },
+        )
+
+        assert credentials == {
+            "sentinel_auth_mode": "managed_identity",
+            "sentinel_subscription_id": "sub",
+            "sentinel_resource_group": "sentinel-rg",
+            "sentinel_workspace_name": "drydock-law",
+        }
+
     def test_every_mapped_target_is_a_key_some_factory_actually_reads(self) -> None:
         """The direction that drifts.
 
@@ -103,6 +122,8 @@ class TestCredentialTranslation:
             "sentinel_tenant_id",
             "sentinel_client_id",
             "sentinel_client_secret",
+            "sentinel_auth_mode",
+            "sentinel_managed_identity_client_id",
             "sentinel_subscription_id",
             "sentinel_resource_group",
             "sentinel_workspace_name",

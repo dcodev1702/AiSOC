@@ -53,6 +53,8 @@ FULL_CREDENTIALS: dict[str, object] = {
     "sentinel_tenant_id": "00000000-0000-0000-0000-000000000001",
     "sentinel_client_id": "00000000-0000-0000-0000-000000000002",
     "sentinel_client_secret": "unit-test-placeholder",
+    "sentinel_auth_mode": "client_secret",
+    "sentinel_managed_identity_client_id": "00000000-0000-0000-0000-000000000006",
     "sentinel_subscription_id": "00000000-0000-0000-0000-000000000003",
     "sentinel_resource_group": "rg-soc",
     "sentinel_workspace_name": "ws-soc",

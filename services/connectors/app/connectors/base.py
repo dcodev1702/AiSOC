@@ -314,6 +314,10 @@ class Field:
     help_text: str | None = None
     # Only meaningful for ``type="select"`` — list of {"value", "label"} dicts.
     options: list[dict[str, str]] | None = None
+    # Optional equality conditions used by the schema-driven console form.
+    # A field is shown only when every named form value matches. Validation
+    # remains the connector constructor's responsibility.
+    visible_when: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -711,6 +715,15 @@ class BaseConnector(ABC):
         advances it.
         """
         return self._next_checkpoint
+
+    async def close(self) -> None:
+        """Release connector-owned async resources.
+
+        Most connectors allocate a client per request and need no teardown.
+        Stateful connectors override this hook; callers can invoke it
+        unconditionally in ``finally`` blocks.
+        """
+        return None
 
     # ----------------------------- acknowledgement (phase 3) -----------------
     #

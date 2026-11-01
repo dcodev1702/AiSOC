@@ -37,6 +37,8 @@ terraform {
 }
 
 provider "azurerm" {
+  skip_provider_registration = true
+
   features {
     key_vault {
       # Let `terraform destroy` purge soft-deleted vaults so a re-apply with
@@ -49,4 +51,16 @@ provider "azurerm" {
       prevent_deletion_if_contains_resources = true
     }
   }
+}
+
+# Sentinel can live in a separate subscription, but it must be in the same
+# Entra tenant as the deployment identity. A provider alias keeps the role
+# assignments explicit while falling back to the current CLI subscription
+# when no separate Sentinel subscription is supplied.
+provider "azurerm" {
+  alias                      = "sentinel_subscription"
+  subscription_id            = var.sentinel_subscription_id != "" ? var.sentinel_subscription_id : null
+  skip_provider_registration = true
+
+  features {}
 }
