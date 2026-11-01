@@ -49,6 +49,11 @@ cryptography = ">=46,<51"
 # ValueError at construction when ``auth_mode=managed_identity`` is
 # selected but the package is missing — see the import guard.
 azure-identity = "^1.19.0"
+# azure-identity keeps its async HTTP transport optional. Both
+# ManagedIdentityCredential and WorkloadIdentityCredential import aiohttp at
+# token acquisition time, so declaring azure-identity alone produces an image
+# that imports cleanly and then fails only on the first live identity request.
+aiohttp = ">=3.10.5,<4.0"
 
 [tool.poetry.group.dev.dependencies]
 # Floored at 9.0.3 for GHSA advisory coverage; the caret pins excluded it.

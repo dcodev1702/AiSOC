@@ -252,6 +252,85 @@ class ConnectorHealthSummary(BaseModel):
     total_events_dropped: int
 
 
+class ManagedIdentityRoleResponse(BaseModel):
+    """One deployment-owned Azure role assignment shown to an operator."""
+
+    name: str
+    scope: str
+    assignment_source: str = "terraform"
+
+
+class ManagedIdentityResponse(BaseModel):
+    """Non-secret identity metadata pinned to one Container App."""
+
+    name: str
+    client_id: str
+    principal_id: str
+    configured: bool
+    roles: list[ManagedIdentityRoleResponse]
+
+
+class SentinelWorkspaceResponse(BaseModel):
+    subscription_id: str
+    resource_group: str
+    name: str
+
+
+class SentinelConnectorIdentityResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    enabled: bool
+    auth_mode: str
+    health_status: str
+    last_verified_at: datetime | None
+    last_sync: datetime | None
+
+
+class SentinelManagedIdentityStatusResponse(BaseModel):
+    """Deployment RBAC plus tenant-specific live connection state.
+
+    Role assignments are declarative facts supplied by the Terraform
+    deployment. ``connection_status`` is deliberately separate and is only
+    ``connected`` after the saved connector's real Sentinel/Log Analytics
+    probe has passed.
+    """
+
+    deployment_configured: bool
+    connection_status: str
+    workspace: SentinelWorkspaceResponse
+    reader_identity: ManagedIdentityResponse
+    responder_identity: ManagedIdentityResponse
+    connector: SentinelConnectorIdentityResponse | None
+
+
+def _managed_identity_verification(config: dict[str, Any]) -> tuple[str, datetime | None]:
+    """Return the latest dedicated Sentinel identity probe, if one exists.
+
+    Poll health also covers normalization and downstream ingest. Keeping the
+    identity probe in its own non-secret config leaf prevents an unavailable
+    event bus from being misreported as an Azure authentication failure.
+    """
+    auth_mode = str(config.get("auth_mode") or "client_secret")
+    if auth_mode != "managed_identity":
+        return "legacy_credentials", None
+    verification = config.get("managed_identity_verification")
+    if not isinstance(verification, dict):
+        return "verification_pending", None
+    success = verification.get("success")
+    raw_verified_at = verification.get("verified_at")
+    verified_at: datetime | None = None
+    if isinstance(raw_verified_at, str):
+        try:
+            verified_at = datetime.fromisoformat(raw_verified_at.replace("Z", "+00:00"))
+        except ValueError:
+            verified_at = None
+    if success is True:
+        return "connected", verified_at
+    if success is False:
+        return "error", verified_at
+    return "verification_pending", verified_at
+
+
 class CreateConnectorRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     connector_type: str = Field(min_length=1, max_length=100)
@@ -768,6 +847,104 @@ async def test_connection(
     )
 
 
+@router.get(
+    "/managed-identity-status",
+    response_model=SentinelManagedIdentityStatusResponse,
+)
+async def managed_identity_status(
+    current_user: Annotated[AuthUser, Depends(require_permission("connectors:read"))],
+    db: DBSession,
+) -> SentinelManagedIdentityStatusResponse:
+    """Show which Azure identities protect Sentinel reads and writeback.
+
+    This endpoint returns identifiers and role names only. It never returns a
+    bearer token or connector credential. The role rows describe Terraform's
+    declared assignments; the connection verdict comes from the latest live
+    connector test so configured RBAC is not confused with proven access.
+    """
+    subscription_id = settings.AISOC_SENTINEL_SUBSCRIPTION_ID.strip()
+    resource_group = settings.AISOC_SENTINEL_RESOURCE_GROUP.strip()
+    workspace_name = settings.AISOC_SENTINEL_WORKSPACE_NAME.strip()
+    role_scope = f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}" if subscription_id and resource_group else ""
+
+    reader = ManagedIdentityResponse(
+        name=settings.AISOC_CONNECTORS_IDENTITY_NAME.strip(),
+        client_id=settings.AISOC_CONNECTORS_IDENTITY_CLIENT_ID.strip(),
+        principal_id=settings.AISOC_CONNECTORS_IDENTITY_PRINCIPAL_ID.strip(),
+        configured=all(
+            (
+                settings.AISOC_CONNECTORS_IDENTITY_NAME.strip(),
+                settings.AISOC_CONNECTORS_IDENTITY_CLIENT_ID.strip(),
+                settings.AISOC_CONNECTORS_IDENTITY_PRINCIPAL_ID.strip(),
+                role_scope,
+            )
+        ),
+        roles=[
+            ManagedIdentityRoleResponse(
+                name="Microsoft Sentinel Reader",
+                scope=role_scope,
+            )
+        ],
+    )
+    responder = ManagedIdentityResponse(
+        name=settings.AISOC_ACTIONS_IDENTITY_NAME.strip(),
+        client_id=settings.AISOC_ACTIONS_IDENTITY_CLIENT_ID.strip(),
+        principal_id=settings.AISOC_ACTIONS_IDENTITY_PRINCIPAL_ID.strip(),
+        configured=all(
+            (
+                settings.AISOC_ACTIONS_IDENTITY_NAME.strip(),
+                settings.AISOC_ACTIONS_IDENTITY_CLIENT_ID.strip(),
+                settings.AISOC_ACTIONS_IDENTITY_PRINCIPAL_ID.strip(),
+                role_scope,
+            )
+        ),
+        roles=[
+            ManagedIdentityRoleResponse(
+                name="Microsoft Sentinel Responder",
+                scope=role_scope,
+            )
+        ],
+    )
+
+    result = await db.execute(
+        select(Connector)
+        .where(
+            Connector.tenant_id == current_user.tenant_id,
+            Connector.connector_type == "microsoft_sentinel",
+        )
+        .order_by(Connector.created_at.desc())
+    )
+    saved = result.scalars().first()
+    connector_response: SentinelConnectorIdentityResponse | None = None
+    connection_status = "not_configured"
+    if saved is not None:
+        config = saved.connector_config if isinstance(saved.connector_config, dict) else {}
+        auth_mode = str(config.get("auth_mode") or "client_secret")
+        connection_status, last_verified_at = _managed_identity_verification(config)
+        connector_response = SentinelConnectorIdentityResponse(
+            id=saved.id,
+            name=saved.name,
+            enabled=saved.is_enabled,
+            auth_mode=auth_mode,
+            health_status=saved.health_status,
+            last_verified_at=last_verified_at,
+            last_sync=saved.last_sync,
+        )
+
+    return SentinelManagedIdentityStatusResponse(
+        deployment_configured=bool(reader.configured and responder.configured and subscription_id and resource_group and workspace_name),
+        connection_status=connection_status,
+        workspace=SentinelWorkspaceResponse(
+            subscription_id=subscription_id,
+            resource_group=resource_group,
+            name=workspace_name,
+        ),
+        reader_identity=reader,
+        responder_identity=responder,
+        connector=connector_response,
+    )
+
+
 # ------------------------------------------------------------------ instance CRUD
 
 
@@ -1101,12 +1278,20 @@ async def test_existing_connector(
     )
 
     health_status = "healthy" if verdict.get("success") else "unhealthy"
+    now = datetime.now(UTC)
+    connector_config = dict(connector.connector_config or {})
+    if connector.connector_type == "microsoft_sentinel" and connector_config.get("auth_mode") == "managed_identity":
+        connector_config["managed_identity_verification"] = {
+            "success": bool(verdict.get("success")),
+            "verified_at": now.isoformat(),
+        }
     await db.execute(
         update(Connector)
         .where(Connector.id == connector_id, Connector.tenant_id == current_user.tenant_id)
         .values(
-            last_health_check=datetime.now(UTC),
+            last_health_check=now,
             health_status=health_status,
+            connector_config=connector_config,
         )
     )
     await db.commit()

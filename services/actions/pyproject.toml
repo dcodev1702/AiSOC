@@ -25,6 +25,10 @@ cryptography = ">=46,<51"
 # Managed-identity support for the Sentinel writeback client. Same lazy
 # import + construction-time validation pattern as services/connectors.
 azure-identity = "^1.19.0"
+# Required by azure.identity.aio at token acquisition time. Without this
+# explicit extra dependency the writeback image boots but cannot obtain a
+# managed-identity token.
+aiohttp = ">=3.10.5,<4.0"
 
 [tool.poetry.group.dev.dependencies]
 # Floored at 9.0.3 for GHSA advisory coverage; the caret pins excluded it.

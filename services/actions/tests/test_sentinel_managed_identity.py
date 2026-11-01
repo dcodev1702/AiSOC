@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 from datetime import UTC, datetime
 from time import time
 from types import SimpleNamespace
@@ -20,6 +21,10 @@ def _managed_client(**kwargs) -> SentinelClient:
         auth_mode="managed_identity",
         **kwargs,
     )
+
+
+def test_async_identity_transport_is_packaged() -> None:
+    assert importlib.util.find_spec("aiohttp") is not None
 
 
 def test_factory_builds_managed_identity_client_from_deployment_env(monkeypatch) -> None:

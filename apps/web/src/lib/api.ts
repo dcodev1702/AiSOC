@@ -3209,6 +3209,46 @@ export const insightsApi = {
 
 export type ConnectorStatus = "active" | "inactive" | "error" | "configuring";
 
+export interface ManagedIdentityRoleStatus {
+  name: string;
+  scope: string;
+  assignment_source: "terraform" | string;
+}
+
+export interface ManagedIdentityStatus {
+  name: string;
+  client_id: string;
+  principal_id: string;
+  configured: boolean;
+  roles: ManagedIdentityRoleStatus[];
+}
+
+export interface SentinelManagedIdentityStatus {
+  deployment_configured: boolean;
+  connection_status:
+    | "not_configured"
+    | "legacy_credentials"
+    | "verification_pending"
+    | "connected"
+    | "error";
+  workspace: {
+    subscription_id: string;
+    resource_group: string;
+    name: string;
+  };
+  reader_identity: ManagedIdentityStatus;
+  responder_identity: ManagedIdentityStatus;
+  connector: {
+    id: string;
+    name: string;
+    enabled: boolean;
+    auth_mode: string;
+    health_status: string;
+    last_verified_at: string | null;
+    last_sync: string | null;
+  } | null;
+}
+
 export interface Connector {
   id: string;
   name: string;
@@ -3508,6 +3548,9 @@ export const connectorsApi = {
     const connectors = rows.map(mapBackendConnector);
     return { connectors, total: connectors.length };
   },
+
+  managedIdentityStatus: () =>
+    request<SentinelManagedIdentityStatus>("/api/v1/connectors/managed-identity-status"),
 
   /** Catalog of available connector types (one entry per registered class). */
   catalog: () => request<ConnectorCatalogResponse>("/api/v1/connectors/catalog"),

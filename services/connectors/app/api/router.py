@@ -39,6 +39,7 @@ from app.connectors.base import Capability
 from app.db.connector_repo import fetch_enabled_connector_for_tenant
 from app.db.engine import get_engine
 from app.federated.query import QueryError, parse_unified_query
+from app.runtime_config import connector_constructor_kwargs
 from app.security.credential_vault import CredentialVaultError, get_vault
 from app.security.egress import EgressRefused, refuse_internal_destinations
 from app.security.tenant_scope import (
@@ -62,11 +63,6 @@ health_router = APIRouter()
 
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
-#: Keys stored on a connector instance that are scheduler knobs rather than
-#: constructor arguments. Passing them through raises ``TypeError`` and turns a
-#: working connector into a 422. Mirrors the filter in ``ConnectorScheduler``.
-_SCHEDULER_ONLY_CONFIG_KEYS = frozenset({"poll_interval_seconds", "checkpoint", "filter_rules"})
-
 #: One answer for "no such instance", "not enabled" and "belongs to another
 #: tenant", with the requested id deliberately **not** echoed back.
 #:
@@ -79,7 +75,8 @@ _NO_SUCH_INSTANCE = "no enabled connector instance"
 
 
 def _connector_kwargs(connector_config: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in connector_config.items() if k not in _SCHEDULER_ONLY_CONFIG_KEYS}
+    """Compatibility wrapper around the shared constructor-config filter."""
+    return connector_constructor_kwargs(connector_config)
 
 
 def _safe_log_val(value: str) -> str:

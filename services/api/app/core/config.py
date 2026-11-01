@@ -286,6 +286,21 @@ class Settings(BaseSettings):
     CONNECTORS_SERVICE_URL: str = "http://connectors:8003"
     CONNECTORS_SERVICE_TIMEOUT_SECONDS: float = 15.0
 
+    # Azure deployment metadata exposed to authenticated operators on the
+    # connectors page. These are identifiers and RBAC declarations, never
+    # credentials. Keeping them in the deployment contract lets the console
+    # show which workload identity is doing the read and which one is reserved
+    # for governed writeback instead of asking for an obsolete client secret.
+    AISOC_CONNECTORS_IDENTITY_NAME: str = ""
+    AISOC_CONNECTORS_IDENTITY_CLIENT_ID: str = ""
+    AISOC_CONNECTORS_IDENTITY_PRINCIPAL_ID: str = ""
+    AISOC_ACTIONS_IDENTITY_NAME: str = ""
+    AISOC_ACTIONS_IDENTITY_CLIENT_ID: str = ""
+    AISOC_ACTIONS_IDENTITY_PRINCIPAL_ID: str = ""
+    AISOC_SENTINEL_SUBSCRIPTION_ID: str = ""
+    AISOC_SENTINEL_RESOURCE_GROUP: str = ""
+    AISOC_SENTINEL_WORKSPACE_NAME: str = ""
+
     # Internal URL of ``services/threatintel``, which polls the public feeds
     # (CISA KEV needs no key) and holds what they collected. The console's
     # /threat-intel page reads through ``GET /threat-intel/indicators`` here;

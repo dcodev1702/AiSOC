@@ -30,6 +30,7 @@ import {
 } from '@/lib/api';
 import { AddConnectorModal } from './AddConnectorModal';
 import { ConnectorInstanceList } from './ConnectorInstanceList';
+import { ManagedIdentityStatusPanel } from './ManagedIdentityStatusPanel';
 import { InboxTokensPanel } from './InboxTokensPanel';
 import { demoFallback } from '@/lib/demoFallback';
 import { FailureBanner } from '@/components/ui/FailureBanner';
@@ -220,6 +221,8 @@ export function ConnectorsView() {
           Add Connector
         </button>
       </div>
+
+      <ManagedIdentityStatusPanel />
 
       {/* Stats — render even with zero connectors so the layout is stable
           between empty/populated states. The drift/dropped tiles only render

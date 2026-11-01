@@ -68,6 +68,13 @@ The connection test performs a read-only incident-list request and a
 resolution, Log Analytics audience, and data-query access before the row is
 saved.
 
+The Connectors page shows the deployed polling and writeback identity names,
+their assigned Sentinel roles and scope, and the most recent live verification
+time. A green **Connected with managed identity** state comes from the saved
+connector's live access test; it is not inferred from Terraform declarations or
+from downstream ingestion health. Re-run **Test connection** on the connector
+after changing Azure role assignments.
+
 ### Client secret deployment
 
 Choose `client_secret` for an Entra app registration and supply Tenant ID,

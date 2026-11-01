@@ -213,6 +213,42 @@ resource "azurerm_container_app" "api" {
         name  = "AISOC_ACTIONS_BASE_URL"
         value = "https://${azurerm_container_app.actions.ingress[0].fqdn}"
       }
+      env {
+        name  = "AISOC_CONNECTORS_IDENTITY_NAME"
+        value = azurerm_user_assigned_identity.connectors.name
+      }
+      env {
+        name  = "AISOC_CONNECTORS_IDENTITY_CLIENT_ID"
+        value = azurerm_user_assigned_identity.connectors.client_id
+      }
+      env {
+        name  = "AISOC_CONNECTORS_IDENTITY_PRINCIPAL_ID"
+        value = azurerm_user_assigned_identity.connectors.principal_id
+      }
+      env {
+        name  = "AISOC_ACTIONS_IDENTITY_NAME"
+        value = azurerm_user_assigned_identity.actions.name
+      }
+      env {
+        name  = "AISOC_ACTIONS_IDENTITY_CLIENT_ID"
+        value = azurerm_user_assigned_identity.actions.client_id
+      }
+      env {
+        name  = "AISOC_ACTIONS_IDENTITY_PRINCIPAL_ID"
+        value = azurerm_user_assigned_identity.actions.principal_id
+      }
+      env {
+        name  = "AISOC_SENTINEL_SUBSCRIPTION_ID"
+        value = var.sentinel_subscription_id != "" ? var.sentinel_subscription_id : data.azurerm_client_config.current.subscription_id
+      }
+      env {
+        name  = "AISOC_SENTINEL_RESOURCE_GROUP"
+        value = var.sentinel_rg_name
+      }
+      env {
+        name  = "AISOC_SENTINEL_WORKSPACE_NAME"
+        value = var.sentinel_workspace_name
+      }
 
       # ── Secret-backed env ────────────────────────────────────────────────────
       env {

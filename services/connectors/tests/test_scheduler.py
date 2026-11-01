@@ -86,7 +86,15 @@ def test_poll_interval_passes_through_valid():
 async def test_poll_one_happy_path(monkeypatch):
     inst = _make_instance(
         connector_type="fake_connector",
-        connector_config={"poll_interval_seconds": 60},
+        connector_config={
+            "poll_interval_seconds": 60,
+            "checkpoint": {"cursor": "saved"},
+            "filter_rules": [{"field": "severity", "op": "gte", "value": "high"}],
+            "managed_identity_verification": {
+                "success": True,
+                "verified_at": "2026-11-01T16:39:44Z",
+            },
+        },
     )
 
     fake_connector = MagicMock()

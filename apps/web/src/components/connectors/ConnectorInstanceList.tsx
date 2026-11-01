@@ -151,6 +151,9 @@ function ConnectorCard({
   const driftRecent =
     driftAt &&
     Date.now() - new Date(driftAt).getTime() < 24 * 60 * 60 * 1000;
+  const usesManagedIdentity =
+    connector.type === 'microsoft_sentinel' &&
+    connector.config?.auth_mode === 'managed_identity';
 
   // Compose the drift tooltip lazily — only the schema-drift sentinel emits a
   // diff so we keep the UI quiet when nothing has changed.
@@ -215,8 +218,13 @@ function ConnectorCard({
       {/* Schema-drift, filter-drop, and freshness SLO badges. Only render
           when there is something to surface so a healthy, fresh connector
           keeps its clean look. */}
-      {(driftAt || eventsDropped > 0 || showFreshnessBadge) && (
+      {(driftAt || eventsDropped > 0 || showFreshnessBadge || usesManagedIdentity) && (
         <div className="flex flex-wrap gap-1.5 mb-3">
+          {usesManagedIdentity && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full border inline-flex items-center gap-1 text-violet-200 bg-violet-500/10 border-violet-500/30">
+              Managed identity
+            </span>
+          )}
           {showFreshnessBadge && freshness && (
             <span
               title={freshnessTooltip}

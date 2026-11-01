@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 from time import time
 from types import SimpleNamespace
 
@@ -17,6 +18,10 @@ def _client(**kwargs) -> MicrosoftSentinelConnector:
         workspace="drydock-law",
         **kwargs,
     )
+
+
+def test_async_identity_transport_is_packaged() -> None:
+    assert importlib.util.find_spec("aiohttp") is not None
 
 
 def test_schema_uses_supported_select_and_conditional_secret_fields() -> None:

@@ -210,6 +210,10 @@ async def test_scheduler_owned_config_keys_do_not_reach_the_constructor(client: 
                     "checkpoint": {"cursor": "2026-10-29T00:00:00Z"},
                     "poll_interval_seconds": 120,
                     "filter_rules": [{"field": "severity", "op": "gte", "value": "high"}],
+                    "managed_identity_verification": {
+                        "success": True,
+                        "verified_at": "2026-11-01T16:39:44Z",
+                    },
                 },
             },
         )

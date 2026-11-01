@@ -35,6 +35,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
+import useSWR from 'swr';
 import {
   connectorsApi,
   oauthApi,
@@ -47,6 +48,7 @@ import {
   type OAuthAppView,
   type TroubleshootResponse,
 } from '@/lib/api';
+import { ManagedIdentityStatusPanel } from './ManagedIdentityStatusPanel';
 
 /**
  * Turn a thrown request error into something an operator can act on.
@@ -1031,6 +1033,10 @@ function ConfigStep({
         <OAuthPanel entry={entry} instanceName={instanceName} />
       )}
 
+      {entry.connector_id === 'microsoft_sentinel' && values.auth_mode === 'managed_identity' && (
+        <ManagedIdentityStatusPanel compact />
+      )}
+
       {/* Manual fields. For hosted-OAuth connectors we collapse these under
           a disclosure since OAuth is the recommended path; for everyone
           else they're rendered inline as before. */}
@@ -1310,6 +1316,11 @@ export function AddConnectorModal({
   primedConnectorId,
   activeCategory,
 }: AddConnectorModalProps) {
+  const { data: managedIdentityStatus } = useSWR(
+    'connectors:managed-identity-status',
+    connectorsApi.managedIdentityStatus,
+    { revalidateOnFocus: false },
+  );
   const [step, setStep] = useState<WizardStep>('pick');
   const [catalog, setCatalog] = useState<ConnectorCatalogEntry[] | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
@@ -1364,8 +1375,15 @@ export function AddConnectorModal({
         if (primedConnectorId) {
           const entry = res.connectors.find((e) => e.connector_id === primedConnectorId);
           if (entry) {
+            const initialValues = buildInitialValues(entry.fields);
+            if (
+              entry.connector_id === 'microsoft_sentinel' &&
+              managedIdentityStatus?.deployment_configured
+            ) {
+              initialValues.auth_mode = 'managed_identity';
+            }
             setSelected(entry);
-            setValues(buildInitialValues(entry.fields));
+            setValues(initialValues);
             setInstanceName(entry.connector_name);
             setStep('configure');
           }
@@ -1402,8 +1420,15 @@ export function AddConnectorModal({
   }, [open, step, onClose]);
 
   const handlePick = (entry: ConnectorCatalogEntry) => {
+    const initialValues = buildInitialValues(entry.fields);
+    if (
+      entry.connector_id === 'microsoft_sentinel' &&
+      managedIdentityStatus?.deployment_configured
+    ) {
+      initialValues.auth_mode = 'managed_identity';
+    }
     setSelected(entry);
-    setValues(buildInitialValues(entry.fields));
+    setValues(initialValues);
     setInstanceName(entry.connector_name);
     setTestResult(null);
     setStep('configure');

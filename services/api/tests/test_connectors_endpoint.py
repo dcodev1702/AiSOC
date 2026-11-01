@@ -20,6 +20,8 @@ We mock ``httpx.AsyncClient`` directly because:
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -31,13 +33,120 @@ from app.api.v1.endpoints.connectors import (
     _load_fallback_catalog,
     _proxy_test_connection,
     _validate_connector_type,
+    managed_identity_status,
     settings,
+)
+from app.api.v1.endpoints.connectors import (
+    test_existing_connector as run_existing_connector_test,
 )
 from fastapi import HTTPException
 
 #: The tenant every proxied call is made on behalf of. The connectors
 #: service refuses a service token that does not declare one.
 _TENANT = uuid.UUID("11111111-1111-1111-1111-111111111111")
+
+
+@pytest.mark.asyncio
+async def test_managed_identity_status_reports_deployment_roles_and_live_connector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The console should describe the identities actually pinned by Azure.
+
+    Role names and scope come from deployment configuration; live connector
+    health remains separate so a configured assignment is never presented as
+    a successful Sentinel connection before the read probe has passed.
+    """
+    monkeypatch.setattr(settings, "AISOC_CONNECTORS_IDENTITY_NAME", "aisocdev-connectors")
+    monkeypatch.setattr(settings, "AISOC_CONNECTORS_IDENTITY_CLIENT_ID", "reader-client")
+    monkeypatch.setattr(settings, "AISOC_CONNECTORS_IDENTITY_PRINCIPAL_ID", "reader-principal")
+    monkeypatch.setattr(settings, "AISOC_ACTIONS_IDENTITY_NAME", "aisocdev-actions")
+    monkeypatch.setattr(settings, "AISOC_ACTIONS_IDENTITY_CLIENT_ID", "responder-client")
+    monkeypatch.setattr(settings, "AISOC_ACTIONS_IDENTITY_PRINCIPAL_ID", "responder-principal")
+    monkeypatch.setattr(settings, "AISOC_SENTINEL_SUBSCRIPTION_ID", "sentinel-sub")
+    monkeypatch.setattr(settings, "AISOC_SENTINEL_RESOURCE_GROUP", "drydock-dev")
+    monkeypatch.setattr(settings, "AISOC_SENTINEL_WORKSPACE_NAME", "drydock-law")
+
+    verified_at = datetime(2026, 11, 1, 15, 59, tzinfo=UTC)
+    connector = SimpleNamespace(
+        id=uuid.UUID("22222222-2222-2222-2222-222222222222"),
+        name="Drydock Sentinel",
+        connector_config={
+            "auth_mode": "managed_identity",
+            "managed_identity_verification": {
+                "success": True,
+                "verified_at": verified_at.isoformat(),
+            },
+        },
+        is_enabled=True,
+        health_status="healthy",
+        last_health_check=verified_at,
+        last_sync=verified_at,
+    )
+    result = MagicMock()
+    result.scalars.return_value.first.return_value = connector
+    db = AsyncMock()
+    db.execute.return_value = result
+
+    response = await managed_identity_status(
+        current_user=SimpleNamespace(tenant_id=_TENANT),
+        db=db,
+    )
+
+    assert response.deployment_configured is True
+    assert response.connection_status == "connected"
+    assert response.workspace.name == "drydock-law"
+    assert response.reader_identity.name == "aisocdev-connectors"
+    assert response.reader_identity.roles[0].name == "Microsoft Sentinel Reader"
+    assert response.reader_identity.roles[0].scope.endswith("/resourceGroups/drydock-dev")
+    assert response.responder_identity.name == "aisocdev-actions"
+    assert response.responder_identity.roles[0].name == "Microsoft Sentinel Responder"
+    assert response.connector is not None
+    assert response.connector.auth_mode == "managed_identity"
+    assert response.connector.last_verified_at == verified_at
+
+
+@pytest.mark.asyncio
+async def test_saved_sentinel_test_records_a_dedicated_identity_verdict() -> None:
+    """A live Sentinel probe must be visible even if later ingestion fails.
+
+    Connector health also covers the downstream event path.  The identity
+    verdict therefore belongs in its own non-secret config leaf rather than
+    being inferred from ``last_sync`` or an unrelated scheduler failure.
+    """
+    connector_id = uuid.UUID("33333333-3333-3333-3333-333333333333")
+    connector = SimpleNamespace(
+        id=connector_id,
+        connector_type="microsoft_sentinel",
+        connector_config={"auth_mode": "managed_identity", "workspace_name": "drydock-law"},
+        auth_config={},
+    )
+    lookup = MagicMock()
+    lookup.scalar_one_or_none.return_value = connector
+    db = AsyncMock()
+    db.execute.side_effect = [lookup, MagicMock()]
+    vault = MagicMock()
+    vault.decrypt_dict.return_value = {}
+
+    with (
+        patch("app.api.v1.endpoints.connectors.get_vault", return_value=vault),
+        patch(
+            "app.api.v1.endpoints.connectors._proxy_test_connection",
+            new=AsyncMock(return_value={"success": True, "message": "connected"}),
+        ),
+    ):
+        verdict = await run_existing_connector_test(
+            connector_id=connector_id,
+            current_user=SimpleNamespace(tenant_id=_TENANT),
+            db=db,
+        )
+
+    assert verdict["success"] is True
+    statement = db.execute.await_args_list[1].args[0]
+    values = statement.compile().params
+    stored_config = values["connector_config"]
+    assert stored_config["workspace_name"] == "drydock-law"
+    assert stored_config["managed_identity_verification"]["success"] is True
+    assert datetime.fromisoformat(stored_config["managed_identity_verification"]["verified_at"]).tzinfo is not None
 
 
 def _mock_response(status_code: int, json_body: Any) -> MagicMock:

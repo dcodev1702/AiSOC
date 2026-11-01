@@ -8,7 +8,7 @@ A serverless-first Terraform skeleton lives at
 [`infra/terraform/azure/`](https://github.com/beenuar/AiSOC/tree/main/infra/terraform/azure).
 It mirrors the [GCP skeleton](./gcp) file-for-file on Azure: Container Apps for
 the customer-visible services (API, web, ingest), Azure Database for
-PostgreSQL Flexible Server 16, and Azure Cache for Redis — all on private
+PostgreSQL Flexible Server 16, and Azure Managed Redis — all on private
 endpoints inside a dedicated VNet.
 
 ## What you get
@@ -19,11 +19,16 @@ endpoints inside a dedicated VNet.
 | Web console (Next.js)        | Azure Container App                              |
 | Ingest gateway (Go)          | Azure Container App                              |
 | Application database         | Postgres Flexible Server 16, VNet-integrated     |
-| Queues / rate limit / fan-out| Azure Cache for Redis, private endpoint, TLS-only|
+| Queues / rate limit / fan-out| Azure Managed Redis, private endpoint, TLS-only  |
 | Secrets                      | Azure Key Vault (auto-generated)                 |
 | Container registry           | Azure Container Registry                         |
 | Networking                   | Dedicated VNet + private DNS zones               |
-| Identity                     | One user-assigned managed identity per app       |
+| Identity                     | Three user-assigned identities by trust boundary  |
+
+The runtime identity is shared by API, web, and ingest. Connector polling has
+its own read-only identity, and governed actions have a separate writeback
+identity. This keeps Sentinel Reader and Sentinel Responder permissions apart
+without creating an identity for every Container App.
 
 ## Prerequisites
 

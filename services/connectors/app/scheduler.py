@@ -78,6 +78,7 @@ from app.pipeline import (
     compute_fingerprint,
     diff_fingerprints,
 )
+from app.runtime_config import connector_constructor_kwargs
 from app.security.credential_vault import CredentialVault, CredentialVaultError, get_vault
 from app.security.egress import EgressRefused, refuse_internal_destinations
 from app.vuln_promotion_sql import (
@@ -572,10 +573,10 @@ class ConnectorScheduler:
             await self._record_failure(target.id)
             return
 
-        # Filter out the scheduler-only knobs from connector_config before
-        # passing to the constructor — connectors don't accept
-        # ``poll_interval_seconds`` (or the ingest ``checkpoint``) as a kwarg.
-        runtime_config = {k: v for k, v in (target.connector_config or {}).items() if k not in {"poll_interval_seconds", "checkpoint"}}
+        # Filter service-owned scheduler and verification state before calling
+        # a connector constructor. The live-test route uses this same helper,
+        # so adding a new persisted runtime key cannot break only one path.
+        runtime_config = connector_constructor_kwargs(target.connector_config or {})
         kwargs = {**auth, **runtime_config}
 
         # A stored destination inside the deployment must not be polled —
