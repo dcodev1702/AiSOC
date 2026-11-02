@@ -22,6 +22,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -33,15 +34,18 @@ import (
 )
 
 const (
-	protocolVar = "KAFKA_SECURITY_PROTOCOL"
-	caVar       = "KAFKA_SSL_CAFILE"
-	certVar     = "KAFKA_SSL_CERTFILE"
-	keyVar      = "KAFKA_SSL_KEYFILE"
-	mechVar     = "KAFKA_SASL_MECHANISM"
-	userVar     = "KAFKA_SASL_USERNAME"
-	passVar     = "KAFKA_SASL_PASSWORD"
-	envVar      = "ENVIRONMENT"
-	overrideVar = "AISOC_ALLOW_CLEARTEXT_KAFKA"
+	protocolVar                = "KAFKA_SECURITY_PROTOCOL"
+	caVar                      = "KAFKA_SSL_CAFILE"
+	certVar                    = "KAFKA_SSL_CERTFILE"
+	keyVar                     = "KAFKA_SSL_KEYFILE"
+	mechVar                    = "KAFKA_SASL_MECHANISM"
+	userVar                    = "KAFKA_SASL_USERNAME"
+	passVar                    = "KAFKA_SASL_PASSWORD"
+	oauthResourceVar           = "KAFKA_OAUTH_RESOURCE"
+	managedIdentityClientIDVar = "KAFKA_MANAGED_IDENTITY_CLIENT_ID"
+	bootstrapVar               = "KAFKA_BOOTSTRAP_SERVERS"
+	envVar                     = "ENVIRONMENT"
+	overrideVar                = "AISOC_ALLOW_CLEARTEXT_KAFKA"
 )
 
 var (
@@ -129,9 +133,42 @@ func saslMechanism() (sasl.Mechanism, error) {
 		return scram.Mechanism(scram.SHA256, user, password)
 	case "SCRAM-SHA-512":
 		return scram.Mechanism(scram.SHA512, user, password)
+	case "OAUTHBEARER":
+		resource, err := oauthResource()
+		if err != nil {
+			return nil, err
+		}
+		clientID := env(managedIdentityClientIDVar)
+		if clientID == "" {
+			clientID = env("AZURE_CLIENT_ID")
+		}
+		credential, err := newManagedIdentityCredential(clientID)
+		if err != nil {
+			return nil, err
+		}
+		return &oauthBearerMechanism{
+			credential: credential,
+			scope:      strings.TrimRight(resource, "/") + "/.default",
+		}, nil
 	default:
 		return nil, fmt.Errorf("%s=%q is not supported", mechVar, name)
 	}
+}
+
+func oauthResource() (string, error) {
+	raw := env(oauthResourceVar)
+	if raw == "" {
+		broker := strings.TrimSpace(strings.Split(env(bootstrapVar), ",")[0])
+		host := strings.Split(broker, ":")[0]
+		if host != "" {
+			raw = "https://" + host
+		}
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+		return "", fmt.Errorf("KAFKA_SASL_MECHANISM=OAUTHBEARER requires %s=https://<event-hubs-namespace>", oauthResourceVar)
+	}
+	return "https://" + parsed.Hostname(), nil
 }
 
 // WriterTransport returns what kafka.Writer.Transport expects.

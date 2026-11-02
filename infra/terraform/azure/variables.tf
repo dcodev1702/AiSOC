@@ -156,6 +156,24 @@ variable "actions_image" {
   default     = "ghcr.io/beenuar/aisoc-actions:latest"
 }
 
+variable "fusion_image" {
+  description = "Container image for the always-on alert fusion service."
+  type        = string
+  default     = "ghcr.io/beenuar/aisoc-fusion:latest"
+}
+
+variable "agents_image" {
+  description = "Container image for the always-on AI agents service."
+  type        = string
+  default     = "ghcr.io/beenuar/aisoc-agents:latest"
+}
+
+variable "realtime_image" {
+  description = "Container image for the always-on realtime fan-out service."
+  type        = string
+  default     = "ghcr.io/beenuar/aisoc-realtime:latest"
+}
+
 variable "sentinel_subscription_id" {
   description = "Subscription containing the existing Sentinel workspace. Empty uses the authenticated Azure subscription."
   type        = string

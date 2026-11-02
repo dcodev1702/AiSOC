@@ -214,6 +214,18 @@ resource "azurerm_container_app" "api" {
         value = "https://${azurerm_container_app.actions.ingress[0].fqdn}"
       }
       env {
+        name  = "AGENTS_SERVICE_URL"
+        value = local.internal_agents_url
+      }
+      env {
+        name  = "FUSION_SERVICE_URL"
+        value = local.internal_fusion_url
+      }
+      env {
+        name  = "REALTIME_BASE_URL"
+        value = local.internal_realtime_url
+      }
+      env {
         name  = "AISOC_CONNECTORS_IDENTITY_NAME"
         value = azurerm_user_assigned_identity.connectors.name
       }
@@ -377,6 +389,18 @@ resource "azurerm_container_app" "web" {
         value = "https://${azurerm_container_app.api.ingress[0].fqdn}"
       }
       env {
+        name  = "AGENTS_URL"
+        value = local.internal_agents_url
+      }
+      env {
+        name  = "REALTIME_URL"
+        value = local.internal_realtime_url
+      }
+      env {
+        name  = "FUSION_URL"
+        value = local.internal_fusion_url
+      }
+      env {
         name  = "NODE_ENV"
         value = "production"
       }
@@ -398,37 +422,37 @@ resource "azurerm_container_app" "ingest" {
 
   identity {
     type         = "UserAssigned"
-    identity_ids = [azurerm_user_assigned_identity.runtime.id]
+    identity_ids = [azurerm_user_assigned_identity.pipeline.id]
   }
 
   registry {
     server   = azurerm_container_registry.main.login_server
-    identity = azurerm_user_assigned_identity.runtime.id
+    identity = azurerm_user_assigned_identity.pipeline.id
   }
 
   secret {
     name                = "postgres-password"
-    identity            = azurerm_user_assigned_identity.runtime.id
+    identity            = azurerm_user_assigned_identity.pipeline.id
     key_vault_secret_id = azurerm_key_vault_secret.postgres_password.versionless_id
   }
   secret {
     name                = "secret-key"
-    identity            = azurerm_user_assigned_identity.runtime.id
+    identity            = azurerm_user_assigned_identity.pipeline.id
     key_vault_secret_id = azurerm_key_vault_secret.secret_key.versionless_id
   }
   secret {
     name                = "redis-auth"
-    identity            = azurerm_user_assigned_identity.runtime.id
+    identity            = azurerm_user_assigned_identity.pipeline.id
     key_vault_secret_id = azurerm_key_vault_secret.redis_auth.versionless_id
   }
   secret {
     name                = "service-token"
-    identity            = azurerm_user_assigned_identity.runtime.id
+    identity            = azurerm_user_assigned_identity.pipeline.id
     key_vault_secret_id = azurerm_key_vault_secret.service_token.versionless_id
   }
   secret {
     name                = "jwt-secret"
-    identity            = azurerm_user_assigned_identity.runtime.id
+    identity            = azurerm_user_assigned_identity.pipeline.id
     key_vault_secret_id = azurerm_key_vault_secret.jwt_secret.versionless_id
   }
 
@@ -444,7 +468,7 @@ resource "azurerm_container_app" "ingest" {
   }
 
   template {
-    min_replicas = 0
+    min_replicas = 1
     max_replicas = var.ingest_max_replicas
 
     container {
@@ -456,6 +480,34 @@ resource "azurerm_container_app" "ingest" {
       env {
         name  = "AISOC_DEPLOYMENT"
         value = "azure-containerapps"
+      }
+      env {
+        name  = "ENVIRONMENT"
+        value = "production"
+      }
+      env {
+        name  = "KAFKA_BOOTSTRAP_SERVERS"
+        value = "${azurerm_eventhub_namespace.main.name}.servicebus.windows.net:9093"
+      }
+      env {
+        name  = "KAFKA_SECURITY_PROTOCOL"
+        value = "SASL_SSL"
+      }
+      env {
+        name  = "KAFKA_SASL_MECHANISM"
+        value = "OAUTHBEARER"
+      }
+      env {
+        name  = "KAFKA_OAUTH_RESOURCE"
+        value = "https://${azurerm_eventhub_namespace.main.name}.servicebus.windows.net"
+      }
+      env {
+        name  = "KAFKA_MANAGED_IDENTITY_CLIENT_ID"
+        value = azurerm_user_assigned_identity.pipeline.client_id
+      }
+      env {
+        name  = "KAFKA_TOPIC"
+        value = "aisoc.raw_events"
       }
       env {
         name  = "POSTGRES_DB"
@@ -516,6 +568,8 @@ resource "azurerm_container_app" "ingest" {
   depends_on = [
     azurerm_role_assignment.acr_pull,
     azurerm_role_assignment.kv_secrets_user,
+    azurerm_role_assignment.eventhubs_sender,
+    azurerm_private_endpoint.eventhubs,
     azurerm_postgresql_flexible_server_database.aisoc,
   ]
 }

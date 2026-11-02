@@ -19,6 +19,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { ManagedIdentityCredential } from '@azure/identity';
 import type { KafkaConfig, SASLOptions } from 'kafkajs';
 
 const VALID_PROTOCOLS = ['PLAINTEXT', 'SSL', 'SASL_PLAINTEXT', 'SASL_SSL'] as const;
@@ -39,6 +40,62 @@ function isProtocol(value: string): value is Protocol {
 /** The `ssl` and `sasl` fields for `new Kafka({...})`. */
 export type KafkaTransport = Pick<KafkaConfig, 'ssl' | 'sasl'>;
 
+type TokenCredential = {
+  getToken(scope: string): Promise<{ token: string; expiresOnTimestamp: number } | null>;
+};
+
+type OAuthBearerProvider = () => Promise<{ value: string }>;
+
+/** Build KafkaJS' refreshable Event Hubs token provider from a UAMI. */
+export function createManagedIdentityOAuthProvider(
+  resource: string,
+  clientId: string,
+  credentialFactory: (clientId: string) => TokenCredential = (id) =>
+    new ManagedIdentityCredential(id),
+  clock: () => number = Date.now,
+): OAuthBearerProvider {
+  const scope = `${resource.replace(/\/+$/, '')}/.default`;
+  const credential = credentialFactory(clientId);
+  let cached: { value: string; expiresOnTimestamp: number } | undefined;
+
+  return async () => {
+    if (cached && clock() < cached.expiresOnTimestamp - 300_000) {
+      return { value: cached.value };
+    }
+    const access = await credential.getToken(scope);
+    if (!access) {
+      throw new Error(`Managed identity returned no access token for ${scope}.`);
+    }
+    cached = { value: access.token, expiresOnTimestamp: access.expiresOnTimestamp };
+    return { value: cached.value };
+  };
+}
+
+function oauthResource(): string {
+  let raw = env('KAFKA_OAUTH_RESOURCE');
+  if (!raw) {
+    const broker = env('KAFKA_BOOTSTRAP_SERVERS').split(',')[0]?.trim() ?? '';
+    const host = broker.split(':')[0];
+    raw = host ? `https://${host}` : '';
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(
+      'KAFKA_SASL_MECHANISM=OAUTHBEARER requires ' +
+        'KAFKA_OAUTH_RESOURCE=https://<event-hubs-namespace>.',
+    );
+  }
+  if (parsed.protocol !== 'https:' || !parsed.hostname) {
+    throw new Error(
+      'KAFKA_SASL_MECHANISM=OAUTHBEARER requires ' +
+        'KAFKA_OAUTH_RESOURCE=https://<event-hubs-namespace>.',
+    );
+  }
+  return `https://${parsed.hostname}`;
+}
+
 function saslOptions(): SASLOptions {
   const mechanism = env('KAFKA_SASL_MECHANISM').toLowerCase();
   const username = env('KAFKA_SASL_USERNAME');
@@ -50,6 +107,18 @@ function saslOptions(): SASLOptions {
       return { mechanism: 'scram-sha-256', username, password };
     case 'scram-sha-512':
       return { mechanism: 'scram-sha-512', username, password };
+    case 'oauthbearer': {
+      const clientId = env('KAFKA_MANAGED_IDENTITY_CLIENT_ID') || env('AZURE_CLIENT_ID');
+      if (!clientId) {
+        throw new Error(
+          'KAFKA_SASL_MECHANISM=OAUTHBEARER requires KAFKA_MANAGED_IDENTITY_CLIENT_ID.',
+        );
+      }
+      return {
+        mechanism: 'oauthbearer',
+        oauthBearerProvider: createManagedIdentityOAuthProvider(oauthResource(), clientId),
+      };
+    }
     case '':
       throw new Error(
         'A SASL protocol requires KAFKA_SASL_MECHANISM (for example PLAIN or SCRAM-SHA-512).',

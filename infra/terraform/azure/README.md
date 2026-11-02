@@ -1,10 +1,12 @@
-# AiSOC on Azure — Terraform skeleton
+# AiSOC on Azure — Terraform deployment
 
 A serverless-first deployment of the AiSOC stack on Microsoft Azure, mirroring
 the [GCP skeleton](../gcp/README.md):
 
 - **Azure Container Apps** for the API, web console, ingest gateway,
-  connectors scheduler, and governed actions service
+  connectors scheduler, governed actions, fusion, agents, and realtime services
+- **Azure Event Hubs Standard** as the private Kafka-compatible application
+  event spine, authenticated only with a user-assigned managed identity
 - **Azure Database for PostgreSQL Flexible Server 16** for the application
   database (VNet-integrated private access, no public endpoint)
 - **Azure Managed Redis** for queues, rate limits, and websocket fan-out
@@ -12,16 +14,15 @@ the [GCP skeleton](../gcp/README.md):
 - **Azure Key Vault** for application secrets, service-to-service tokens, and
   service-specific TLS database URLs
 - **Azure Container Registry** as the registry CI pushes to
-- **Three user-assigned managed identities** aligned to trust boundaries: a
-  shared API/web/ingest runtime, a read-only Sentinel connector, and a
-  Sentinel writeback identity — no registry passwords or connection strings
-  on disk
+- **Four user-assigned managed identities** aligned to trust boundaries: a
+  shared API/web runtime, an ingest/fusion/agents/realtime pipeline identity,
+  a read-only Sentinel connector, and a Sentinel writeback identity — no
+  Event Hubs connection strings, registry passwords, or client secrets
 
-> This is the **skeleton** — a buyer-friendly starting point that includes the
-> Sentinel polling and writeback path. Other long-running workloads (`agents`,
-> `realtime`, `threatintel`, `alert-fusion`, `fusion`) need
-> always-on compute and are deferred to a follow-up plan. See
-> [Limitations](#limitations).
+Sentinel remains the system of record. The connector polls the existing
+Sentinel incident API and sends those normalized records through ingest. Event
+Hubs carries AiSOC's internal events from ingest to fusion, agents, and
+realtime; Log Analytics tables do **not** need diagnostic export to Event Hubs.
 
 ## Layout
 
@@ -37,6 +38,8 @@ infra/terraform/azure/
 ├── secrets.tf               ← Key Vault + generated/optional secret values
 ├── iam.tf                   ← shared runtime identity + role assignments
 ├── container_apps.tf        ← api / web / ingest Container Apps
+├── event_hubs.tf            ← Standard Kafka endpoint, topics, private link
+├── ai_services.tf           ← fusion / agents / realtime Container Apps
 ├── connectors_identity.tf   ← connectors app + Sentinel Reader identity
 ├── actions_identity.tf      ← actions app + Sentinel Responder identity
 ├── outputs.tf               ← URLs, connection targets, identity + vault IDs
@@ -62,7 +65,7 @@ into modules when you start running multiple environments off the same code.
    ```bash
    for namespace in \
      Microsoft.App Microsoft.Authorization Microsoft.Cache \
-     Microsoft.ContainerRegistry Microsoft.DBforPostgreSQL \
+     Microsoft.ContainerRegistry Microsoft.DBforPostgreSQL Microsoft.EventHub \
      Microsoft.KeyVault Microsoft.ManagedIdentity Microsoft.Network \
      Microsoft.OperationalInsights Microsoft.SecurityInsights; do
      az provider register --namespace "$namespace" --wait
@@ -94,8 +97,22 @@ terraform apply tfplan
 A full apply can take 20–45 minutes — most of that is PostgreSQL and Azure
 Managed Redis provisioning. After apply, the
 `api_url`, `web_url`, and `ingest_url` outputs are publicly reachable
-immediately. The connectors and actions apps use internal ingress and are
-reached by the API service.
+immediately. Connectors, actions, fusion, agents, and realtime use internal
+ingress and are reached through the API/web gateways.
+
+## Sentinel, Log Analytics, and Event Hubs
+
+The default hybrid path deliberately exports zero Log Analytics tables:
+
+```text
+Sentinel incident API -> connectors -> ingest -> Event Hubs -> fusion -> agents/realtime
+```
+
+`SecurityIncident`, `SecurityAlert`, and `AlertEvidence` remain queryable in
+`drydock-law` for investigation. Add a Log Analytics data-export rule only if
+you later need raw, near-real-time table streaming that the incident poll does
+not provide. In that optional mode, forward only the tables required by the
+specific use case; do not duplicate the entire workspace by default.
 
 ## State backend
 
@@ -133,7 +150,7 @@ az acr login --name "${ACR%%.*}"
 
 docker build -t $ACR/api:$(git rev-parse --short HEAD)    services/api
 docker push     $ACR/api:$(git rev-parse --short HEAD)
-# repeat for web, ingest, connectors, and actions
+# repeat for web, ingest, connectors, actions, fusion, agents, and realtime
 
 terraform apply \
   -var "api_image=$ACR/api:<sha>" \
@@ -143,11 +160,11 @@ terraform apply \
   -var "actions_image=$ACR/actions:<sha>"
 ```
 
-The three managed identities already hold `AcrPull`, so no registry admin user
-or password is needed. The shared runtime identity is intentionally a lean
-test/small-deployment choice: API, web, and ingest share its Key Vault access.
-For a production isolation boundary, split that runtime identity per workload;
-the connector Reader and action Responder identities should remain separate.
+The four managed identities already hold `AcrPull`, so no registry admin user
+or password is needed. The shared runtime and pipeline identities are lean
+trust-boundary choices: the pipeline identity alone has Event Hubs Data Sender
+and Data Receiver. The connector Reader and action Responder identities remain
+separate because their Sentinel permissions are materially different.
 
 ## Connecting to Postgres from your laptop
 
@@ -180,13 +197,10 @@ selected region and current pricing. For a cost-sensitive sandbox, set
 
 ## Limitations
 
-This is the **skeleton**, not the full migration. Known gaps:
+Known gaps:
 
-- **Some long-running services are omitted.** `services/agents`,
-  `services/realtime`, `services/fusion`, and `services/threatintel` need
-  always-on compute. Run them as dedicated Container
-  Apps with `min_replicas > 0` (KEDA can still scale on queue depth) or move
-  them to AKS sharing this VNet, Postgres, and Redis.
+- **Threat intelligence and UEBA are not deployed.** The core path keeps these
+  integrations disabled until their dedicated services are added.
 - **Managed Redis is TLS-only.** The API uses a Key Vault-backed `rediss://`
   URL and the other workloads use the database-reported encrypted port
   (currently `10000`).

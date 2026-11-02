@@ -59,6 +59,8 @@ structlog = ">=24.1,<27.0"
 prometheus-client = ">=0.19,<0.27"
 python-dateutil = "^2.8.2"
 aiokafka = ">=0.10,<0.15"
+# Managed-identity OAUTHBEARER for Azure Event Hubs' Kafka endpoint.
+azure-identity = ">=1.27,<2"
 # No `fastembed` extra. This service computes its embeddings through the
 # OpenAI client and talks to Qdrant with explicit PointStruct upserts and
 # vector search (app/tools/mitre_full.py) — nothing here calls the

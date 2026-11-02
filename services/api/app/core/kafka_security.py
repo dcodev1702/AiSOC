@@ -41,10 +41,21 @@ deployment, and the one that drifts is never the one anybody tests.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import os
 import ssl
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Final
+from urllib.parse import urlparse
+
+try:
+    from aiokafka.abc import AbstractTokenProvider
+except ImportError:  # pragma: no cover - gate scripts load this file without service deps
+    class AbstractTokenProvider:  # type: ignore[no-redef]
+        """Import-safe fallback; production images always install aiokafka."""
 
 #: The protocols aiokafka accepts. Spelled out rather than passed through,
 #: so a typo in an environment variable is a refusal at startup and not a
@@ -64,6 +75,9 @@ KEY_VAR: Final[str] = "KAFKA_SSL_KEYFILE"
 MECHANISM_VAR: Final[str] = "KAFKA_SASL_MECHANISM"
 USERNAME_VAR: Final[str] = "KAFKA_SASL_USERNAME"
 PASSWORD_VAR: Final[str] = "KAFKA_SASL_PASSWORD"
+OAUTH_RESOURCE_VAR: Final[str] = "KAFKA_OAUTH_RESOURCE"
+MANAGED_IDENTITY_CLIENT_ID_VAR: Final[str] = "KAFKA_MANAGED_IDENTITY_CLIENT_ID"
+BOOTSTRAP_VAR: Final[str] = "KAFKA_BOOTSTRAP_SERVERS"
 ENV_VAR: Final[str] = "ENVIRONMENT"
 
 #: Set to any truthy value to run a protected environment on a cleartext
@@ -79,6 +93,75 @@ class KafkaTransportError(RuntimeError):
     """Refusal to build a client whose transport is wrong for this environment."""
 
 
+def _managed_identity_credential(client_id: str | None) -> Any:
+    """Create the Azure credential lazily so non-Azure deployments stay lean."""
+    try:
+        from azure.identity.aio import ManagedIdentityCredential
+    except ImportError as exc:  # pragma: no cover - deployment dependency check
+        raise KafkaTransportError(
+            "KAFKA_SASL_MECHANISM=OAUTHBEARER requires azure-identity in this service image"
+        ) from exc
+    return ManagedIdentityCredential(client_id=client_id) if client_id else ManagedIdentityCredential()
+
+
+class ManagedIdentityTokenProvider(AbstractTokenProvider):
+    """Refreshable aiokafka OAuth provider backed by an Azure managed identity."""
+
+    def __init__(
+        self,
+        *,
+        resource: str,
+        client_id: str | None,
+        credential_factory: Callable[[str | None], Any] = _managed_identity_credential,
+        clock: Callable[[], float] = time.time,
+        refresh_skew_seconds: int = 300,
+    ) -> None:
+        self._scope = f"{resource.rstrip('/')}/.default"
+        self._client_id = client_id
+        self._credential_factory = credential_factory
+        self._clock = clock
+        self._refresh_skew_seconds = refresh_skew_seconds
+        self._cached_token = ""
+        self._expires_on = 0
+        self._lock = asyncio.Lock()
+
+    async def token(self) -> str:
+        if self._cached_token and self._clock() < self._expires_on - self._refresh_skew_seconds:
+            return self._cached_token
+        async with self._lock:
+            if self._cached_token and self._clock() < self._expires_on - self._refresh_skew_seconds:
+                return self._cached_token
+            credential = self._credential_factory(self._client_id)
+            try:
+                access = await credential.get_token(self._scope)
+            finally:
+                close = getattr(credential, "close", None)
+                if close is not None:
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await result
+            self._cached_token = str(access.token)
+            self._expires_on = int(access.expires_on)
+            return self._cached_token
+
+    def extensions(self) -> dict[str, str]:
+        return {}
+
+
+def _oauth_resource() -> str:
+    raw = _env(OAUTH_RESOURCE_VAR)
+    if not raw:
+        bootstrap = _env(BOOTSTRAP_VAR).split(",", 1)[0].strip()
+        host = bootstrap.rsplit(":", 1)[0] if ":" in bootstrap else bootstrap
+        raw = f"https://{host}" if host else ""
+    parsed = urlparse(raw)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise KafkaTransportError(
+            f"KAFKA_SASL_MECHANISM=OAUTHBEARER requires {OAUTH_RESOURCE_VAR}=https://<event-hubs-namespace>"
+        )
+    return f"https://{parsed.hostname}"
+
+
 @dataclass(frozen=True)
 class KafkaTransport:
     """Resolved transport, ready to splat into a client constructor."""
@@ -88,6 +171,8 @@ class KafkaTransport:
     sasl_mechanism: str | None = None
     sasl_username: str | None = None
     sasl_password: str | None = field(default=None, repr=False)
+    oauth_resource: str | None = None
+    managed_identity_client_id: str | None = None
 
     @property
     def is_cleartext(self) -> bool:
@@ -106,8 +191,16 @@ class KafkaTransport:
             kwargs["ssl_context"] = self.ssl_context
         if self.sasl_mechanism:
             kwargs["sasl_mechanism"] = self.sasl_mechanism
-            kwargs["sasl_plain_username"] = self.sasl_username
-            kwargs["sasl_plain_password"] = self.sasl_password
+            if self.sasl_mechanism == "OAUTHBEARER":
+                if not self.oauth_resource:
+                    raise KafkaTransportError("OAUTHBEARER transport has no Azure Event Hubs resource")
+                kwargs["sasl_oauth_token_provider"] = ManagedIdentityTokenProvider(
+                    resource=self.oauth_resource,
+                    client_id=self.managed_identity_client_id,
+                )
+            else:
+                kwargs["sasl_plain_username"] = self.sasl_username
+                kwargs["sasl_plain_password"] = self.sasl_password
         return kwargs
 
 
@@ -163,9 +256,11 @@ def resolve_transport(
             )
 
     context = _build_ssl_context() if resolved in {"SSL", "SASL_SSL"} else None
-    mechanism = _env(MECHANISM_VAR) or None
+    mechanism = _env(MECHANISM_VAR).upper() or None
     if resolved.startswith("SASL_") and not mechanism:
         raise KafkaTransportError(f"{PROTOCOL_VAR}={resolved!r} requires {MECHANISM_VAR} (for example PLAIN or SCRAM-SHA-512).")
+
+    oauth_resource = _oauth_resource() if mechanism == "OAUTHBEARER" else None
 
     return KafkaTransport(
         protocol=resolved,
@@ -173,6 +268,8 @@ def resolve_transport(
         sasl_mechanism=mechanism,
         sasl_username=_env(USERNAME_VAR) or None,
         sasl_password=_env(PASSWORD_VAR) or None,
+        oauth_resource=oauth_resource,
+        managed_identity_client_id=_env(MANAGED_IDENTITY_CLIENT_ID_VAR) or _env("AZURE_CLIENT_ID") or None,
     )
 
 

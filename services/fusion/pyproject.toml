@@ -24,6 +24,11 @@ uvicorn = {extras = ["standard"], version = ">=0.29,<0.54"}
 pydantic = "^2.5.0"
 pydantic-settings = "^2.1.0"
 aiokafka = "^0.10.0"
+# Event Hubs Kafka OAUTHBEARER tokens come from the Container App's assigned
+# identity. aiohttp is explicit because azure.identity.aio does not install
+# its async transport dependency for us.
+azure-identity = ">=1.27,<2"
+aiohttp = ">=3.14.3,<4"
 aioredis = "^2.0.1"
 redis = {extras = ["hiredis"], version = "^5.0.1"}
 asyncpg = "^0.29.0"

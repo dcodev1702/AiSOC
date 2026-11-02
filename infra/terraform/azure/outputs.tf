@@ -63,8 +63,33 @@ output "container_registry_login_server" {
 # ─── Managed identities ──────────────────────────────────────────────────────
 
 output "identity_runtime_client_id" {
-  description = "Client ID of the shared API, web, and ingest runtime identity."
+  description = "Client ID of the shared API and web runtime identity."
   value       = azurerm_user_assigned_identity.runtime.client_id
+}
+
+output "identity_pipeline_client_id" {
+  description = "Client ID of the ingest, fusion, agents, and realtime pipeline identity."
+  value       = azurerm_user_assigned_identity.pipeline.client_id
+}
+
+output "event_hubs_namespace" {
+  description = "Standard Event Hubs namespace used through its Kafka-compatible endpoint."
+  value       = azurerm_eventhub_namespace.main.name
+}
+
+output "fusion_url" {
+  description = "Internal fusion service URL."
+  value       = local.internal_fusion_url
+}
+
+output "agents_url" {
+  description = "Internal agents service URL."
+  value       = local.internal_agents_url
+}
+
+output "realtime_url" {
+  description = "Internal realtime service URL."
+  value       = local.internal_realtime_url
 }
 
 # ─── Key Vault ───────────────────────────────────────────────────────────────

@@ -1,9 +1,10 @@
 /**
  * AiSOC — Azure serverless skeleton
  *
- * Three user-assigned managed identities split the deployment by trust
+ * Four user-assigned managed identities split the deployment by trust
  * boundary rather than by process:
- *   - runtime: api, web, and ingest platform access
+ *   - runtime: api and web platform access
+ *   - pipeline: ingest, fusion, agents, and realtime event processing
  *   - connectors: read-only Sentinel polling
  *   - actions: governed Sentinel writeback
  *
@@ -24,11 +25,19 @@ resource "azurerm_user_assigned_identity" "runtime" {
   tags                = var.tags
 }
 
+resource "azurerm_user_assigned_identity" "pipeline" {
+  name                = "${var.name_prefix}-pipeline"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  tags                = var.tags
+}
+
 # ─── ACR pull ────────────────────────────────────────────────────────────────
 
 locals {
   acr_pull_identities = {
     runtime    = azurerm_user_assigned_identity.runtime.principal_id
+    pipeline   = azurerm_user_assigned_identity.pipeline.principal_id
     connectors = azurerm_user_assigned_identity.connectors.principal_id
     actions    = azurerm_user_assigned_identity.actions.principal_id
   }
@@ -48,6 +57,7 @@ resource "azurerm_role_assignment" "acr_pull" {
 locals {
   kv_reader_identities = {
     runtime    = azurerm_user_assigned_identity.runtime.principal_id
+    pipeline   = azurerm_user_assigned_identity.pipeline.principal_id
     connectors = azurerm_user_assigned_identity.connectors.principal_id
     actions    = azurerm_user_assigned_identity.actions.principal_id
   }
