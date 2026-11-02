@@ -31,6 +31,7 @@ migration that would need it rather than assumed.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -245,7 +246,7 @@ MIGRATIONS: tuple[LakeMigration, ...] = (
 )
 
 
-async def _execute(client: Any, sql: str, params: dict[str, Any] | None = None) -> Any:
+async def _execute(client: Any, sql: str, params: Any | None = None) -> Any:
     """Run one statement against whichever ClickHouse client shape we have.
 
     The async driver exposes `execute`; the HTTP client exposes `command`.
@@ -254,9 +255,11 @@ async def _execute(client: Any, sql: str, params: dict[str, Any] | None = None) 
     does not run in half the deployments.
     """
     if hasattr(client, "execute"):
-        return await client.execute(sql, params or {})
+        result = client.execute(sql) if params is None else client.execute(sql, params)
+        return await result if inspect.isawaitable(result) else result
     if hasattr(client, "command"):
-        return await client.command(sql)
+        result = client.command(sql)
+        return await result if inspect.isawaitable(result) else result
     raise TypeError(f"{type(client).__name__} exposes neither execute() nor command(); the lake migration runner cannot drive it")
 
 
@@ -289,15 +292,33 @@ async def applied_ids(client: Any) -> set[str]:
 
 
 async def _record(client: Any, migration: LakeMigration, statements: int) -> None:
+    record = {
+        "migration_id": migration.id,
+        "description": migration.description,
+        "applied_at": datetime.now(UTC),
+        "statements": statements,
+    }
+    if hasattr(client, "execute"):
+        # clickhouse-driver's INSERT protocol takes an iterable of rows. A
+        # single dict is interpreted as a mapping of query substitutions and
+        # leaves the driver waiting for insert data until its socket timeout.
+        await _execute(
+            client,
+            f"INSERT INTO {MIGRATION_TABLE} (migration_id, description, applied_at, statements) VALUES",
+            [record],
+        )
+        return
+
+    def literal(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("'", "\\'")
+
+    applied_at = record["applied_at"].strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     await _execute(
         client,
-        f"INSERT INTO {MIGRATION_TABLE} (migration_id, description, applied_at, statements) VALUES",
-        {
-            "migration_id": migration.id,
-            "description": migration.description,
-            "applied_at": datetime.now(UTC),
-            "statements": statements,
-        },
+        f"INSERT INTO {MIGRATION_TABLE} "
+        "(migration_id, description, applied_at, statements) VALUES "
+        f"('{literal(migration.id)}', '{literal(migration.description)}', "
+        f"toDateTime64('{applied_at}', 3, 'UTC'), {statements})",
     )
 
 

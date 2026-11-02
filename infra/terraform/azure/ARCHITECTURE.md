@@ -1,137 +1,177 @@
 # AiSOC Azure architecture
 
-This diagram describes the deployed test stack in subscription `dev-defconai`.
-The existing `drydock-dev/drydock-law` workspace remains the Microsoft Sentinel
-system of record. AiSOC polls Sentinel incidents in place; it does not export
-Log Analytics tables into Event Hubs.
+This is the deployed proof-of-concept in subscription `dev-defconai`. The
+existing `drydock-dev/drydock-law` workspace remains the Microsoft Sentinel
+system of record. AiSOC reads Sentinel incidents and selected Log Analytics
+tables in place; it does not export the workspace into Event Hubs.
 
 ```mermaid
-flowchart LR
-  analyst["SOC analyst"]
+flowchart TB
+  analyst(["Tier-1 cyber defense analyst"])
 
-  subgraph sentinel["Existing security operations plane"]
-    law["drydock-law\nSecurityIncident · SecurityAlert · AlertEvidence"]
-    incidents["Microsoft Sentinel\nincident API"]
-    law --- incidents
+  subgraph source["Existing Microsoft security plane · Germany West Central"]
+    direction LR
+    law["drydock-law · Log Analytics<br/>SecurityIncident · SecurityAlert · AlertEvidence"]
+    sentinel["Microsoft Sentinel<br/>incident API · UEBA · anomalies"]
+    law --- sentinel
   end
 
-  subgraph apps["AiSOC · Azure Container Apps"]
+  subgraph app["AiSOC application plane · Azure Container Apps · North Europe"]
     direction LR
     web["Web console"]
-    api["API"]
-    connector["Sentinel connector\npoll + normalize + checkpoint"]
-    ingest["Ingest\ntenant validation + publish"]
-    fusion["Fusion\nOCSF normalize + dedupe + correlate"]
-    agents["Agents\ntriage + investigation"]
-    realtime["Realtime\nWS / SSE fan-out"]
-    actions["Governed actions\napproval + writeback"]
-    gateway["Internal model gateway\nOpenAI-compatible aliases"]
+    api["API<br/>policy · investigation · lake query"]
+    connectors["Connectors<br/>poll · normalize · checkpoint"]
+    ingest["Ingest<br/>tenant validation · OCSF · graph extract"]
+    fusion["Fusion<br/>detect · dedupe · correlate"]
+    ueba["AiSOC UEBA<br/>behavior baselines · anomalies"]
+    agents["Agents<br/>68 scheduled hunts · AI triage"]
+    realtime["Realtime<br/>WebSocket / SSE"]
+    actions["Governed actions<br/>L1 policy · human approval"]
+    gateway["Internal model gateway<br/>logical fast/deep aliases"]
   end
 
-  subgraph transport["Private event transport"]
+  subgraph spine["Private transport · Event Hubs Standard · 7-day retention"]
     direction LR
-    ehraw["Event Hubs Standard\naisoc.raw_events / aisoc.alerts.raw"]
-    ehfused["Event Hubs Standard\naisoc.alerts.fused / graph updates"]
+    raw["aisoc.raw_events<br/>aisoc.alerts.raw"]
+    derived["aisoc.alerts.fused<br/>ueba.anomalies<br/>security.graph_updates<br/>DLQ / vulnerability matches"]
   end
 
   subgraph state["Durable application state"]
     direction LR
-    postgres["PostgreSQL\nalerts · incidents · connectors\ninvestigations · checkpoints"]
-    redis["Managed Redis\nqueues · limits · fan-out"]
+    pg["PostgreSQL<br/>alerts · incidents · policies<br/>hunts · investigations · checkpoints"]
+    redis["Managed Redis<br/>limits · queues · fan-out"]
   end
 
-  subgraph ai["Private managed-identity model plane"]
+  subgraph lake["Evidence and relationship plane · isolated peered VNet · Germany West Central"]
     direction LR
-    pe["Private endpoint + DNS"]
-    foundry["Microsoft Foundry\naisocdev-soc"]
-    gpt["GPT-5.6-Terra\nactive"]
-    claude["Claude Sonnet 5.5\ncodified · subscription allowlist pending"]
+    vm["Spot VM · Standard_E2as_v5<br/>Standard SSD OS + 512 GiB data"]
+    ch["ClickHouse<br/>hot searchable events · 365 days"]
+    neo["Neo4j<br/>entities · relationships · pivots"]
+    vm --- ch
+    vm --- neo
   end
 
-  subgraph platform["Deployment and secrets"]
+  subgraph archive["ADLS Gen2 · Standard LRS · private endpoints"]
     direction LR
-    acr["Azure Container Registry\nimmutable image digests"]
-    kv["Key Vault\nruntime secrets + internal gateway key"]
-    terraform["Terraform\nnetwork · RBAC · services"]
+    parquet["events filesystem<br/>Parquet: cool/cold year 2<br/>archive years 3–5"]
+    backups["backups filesystem<br/>ClickHouse backup + restore verification"]
+    jobs["Scheduled Container Apps jobs<br/>archive · backup · integrity drill"]
+    jobs --> parquet
+    jobs --> backups
+  end
+
+  subgraph models["Private Microsoft Foundry model plane"]
+    direction LR
+    foundry["Foundry project · aisocdev-soc<br/>private endpoint · local auth disabled"]
+    gpt["GPT-5.6-Terra<br/>active · managed identity"]
+    sonnet["Claude Sonnet 5.5<br/>codified · allowlisting pending"]
+    foundry --> gpt
+    foundry -. "Marketplace approval" .-> sonnet
   end
 
   analyst --> web
   web --> api
   realtime --> web
-  api --> postgres
+  api --> pg
   api --> redis
 
-  incidents -->|"poll with Sentinel Reader"| connector
-  connector -->|"normalized accepted events"| ingest
-  connector -. "optional investigation queries" .-> law
-  ingest --> ehraw
-  ehraw --> fusion
-  fusion --> postgres
-  fusion --> ehfused
-  ehfused --> agents
-  ehfused --> realtime
-  agents --> postgres
-  agents --> redis
-  api -->|"approved response request"| actions
-  actions -->|"Sentinel Responder writeback"| incidents
+  sentinel -->|"Sentinel Reader UAMI"| connectors
+  connectors -. "KQL investigation in place" .-> law
+  connectors --> ingest
+  ingest --> raw
+  raw --> fusion
+  raw --> ueba
+  fusion --> derived
+  fusion --> pg
+  fusion --> ch
+  ingest -->|"batched graph writes"| neo
+  derived --> agents
+  derived --> realtime
+  ueba --> derived
+  agents --> pg
+  agents --> ch
+  agents --> neo
+  api --> ch
+  api --> neo
+  api -->|"approved response"| actions
+  actions -->|"Sentinel Responder UAMI"| sentinel
 
   api --> gateway
   agents --> gateway
-  gateway -->|"pipeline UAMI · Entra token"| pe
-  pe --> foundry
-  foundry --> gpt
-  foundry -.-> claude
+  gateway -->|"pipeline UAMI · Entra token"| foundry
 
-  terraform --> acr
-  terraform --> kv
-  terraform -. "provisions private services" .-> ehraw
-  terraform -.-> foundry
-  acr -. "immutable images · AcrPull" .-> web
-  kv -. "secret references · Key Vault Secrets User" .-> api
+  ch -->|"age-qualified Parquet export"| jobs
+  ch -->|"snapshot"| jobs
+  backups -. "restore + row-count verification" .-> ch
 
   classDef active fill:#d9f7e8,stroke:#16845b,color:#0b3b2b;
+  classDef managed fill:#dcecff,stroke:#2563a6,color:#102a43;
+  classDef data fill:#eee5ff,stroke:#7550a8,color:#2f1b45;
   classDef waiting fill:#fff2cc,stroke:#b78103,color:#4d3800,stroke-dasharray:5 3;
-  class gpt active;
-  class claude waiting;
+  class sentinel,gpt,ingest,fusion,ueba,agents,ch,neo active;
+  class raw,derived,pg,redis managed;
+  class parquet,backups data;
+  class sonnet waiting;
 ```
 
 ## Managed-identity boundaries
 
 | Identity | Workloads | Azure data-plane roles |
 | --- | --- | --- |
-| `aisocdev-runtime` | API, web | ACR pull, Key Vault secret read |
-| `aisocdev-pipeline` | ingest, fusion, agents, realtime, model gateway | ACR pull, Key Vault secret read, Event Hubs Data Sender/Receiver, Cognitive Services User |
+| `aisocdev-runtime` | API, web | ACR pull, Key Vault secret read, ADLS read for application queries |
+| `aisocdev-pipeline` | ingest, fusion, UEBA, agents, realtime, model gateway, archive and backup jobs | ACR pull, Key Vault secret read, Event Hubs Data Sender/Receiver, Cognitive Services User, ADLS contribution |
 | `aisocdev-connectors` | connector scheduler | ACR pull, Key Vault secret read, Microsoft Sentinel Reader on `drydock-dev` |
 | `aisocdev-actions` | governed actions | ACR pull, Key Vault secret read, Microsoft Sentinel Responder on `drydock-dev` |
 
-This is intentionally four identities rather than one per service. Runtime and
-pipeline permissions are consolidated where the workloads share a trust
-boundary, while Sentinel read and writeback remain separate because a connector
-compromise must not gain incident-management authority.
+Four identities are the lean trust-boundary result, not one identity per
+service. Runtime and pipeline workloads share permissions inside their planes;
+Sentinel read and writeback stay separate so a connector compromise does not
+gain incident-management authority. The ClickHouse/Neo4j VM uses its own
+system-assigned identity only for its ADLS backup boundary.
 
-## Ingestion and retention semantics
+## Ingestion and health semantics
 
-1. The connector polls the Sentinel incident API every five minutes and keeps a
-   Sentinel last-modified checkpoint.
-2. Ingest validates the declared tenant and publishes accepted events to the
-   private Event Hubs namespace with managed identity.
-3. Fusion normalizes, deduplicates, correlates, and persists durable alerts in
-   PostgreSQL. Agents triage fused alerts and also persist their results there.
-4. The connector stores both a cumulative `events_ingested` counter and the
-   freshest accepted source time in `last_event_at`. The Operations Funnel uses
-   the latter to decide whether Ingest is fresh.
+1. The managed-identity connector polls the Sentinel incident API and queries
+   `drydock-law` only when an investigation needs table evidence.
+2. Ingest validates the tenant and publishes through the Kafka-compatible
+   Event Hubs endpoint with the pipeline identity. Each writer has an isolated
+   transport pool so concurrent raw, vulnerability, and graph publishing
+   cannot corrupt Kafka correlation IDs.
+3. Fusion promotes security findings, runs detections, correlates alerts, and
+   persists both PostgreSQL state and ClickHouse raw-event projections. Ingest
+   also writes extracted entities and relationships to Neo4j.
+4. The dashboard marks the shared ingest stage healthy from recent persisted
+   flow, then falls back to scheduled-connector freshness when no event has
+   crossed the pipeline. Stale connectors still appear in backlog/error detail
+   and on the connector-health page.
 
-Event Hubs is a seven-day transport buffer in this test stack. A raw-event
-ClickHouse lake is not deployed, so Event Hubs should not be treated as the
-long-term evidence archive. Sentinel/Log Analytics retains the original Azure
-security evidence, while PostgreSQL retains AiSOC alerts, incidents, connector
-state, and investigation records.
+The LAW is not required to forward any tables to Event Hubs for this design.
+Event Hubs is AiSOC's internal seven-day recovery buffer, not its evidence
+archive and not a duplicate of Sentinel storage.
 
-## Model routing state
+## Retention and recovery
 
-The API and agents use logical gateway aliases; they do not hold provider API
-keys. The internal gateway uses the pipeline identity to obtain a Foundry token
-through private networking. GPT-5.6-Terra currently serves both the fast and
-deep aliases. When the subscription is enabled for the Claude Marketplace
-offer and `enable_claude_sonnet` is set, the deep aliases switch to Claude
-Sonnet 5.5 without changing the callers.
+- ClickHouse is the hot searchable tier. Tenant policy defaults raw-event
+  retention to 365 days; its table TTL has a 400-day safety ceiling so the
+  archive job has time to export before deletion.
+- Parquet is written to the private ADLS Gen2 `events` filesystem when records
+  age out of the hot window. Blobs are cool immediately, cold after 90 days,
+  archived after one year, and deleted after four ADLS years. Combined with
+  the ClickHouse year, that is five years end to end: one hot, one cool/cold,
+  and three archived.
+- The backup job writes to the separate `backups` filesystem, downloads its
+  own artifact, validates the checksum, restores it into a temporary table,
+  and compares row counts. The Spot VM may be evicted; these jobs and ADLS are
+  the recovery mechanism, not a claim of high availability.
+
+## Models and governed response
+
+The API and agents call gateway aliases and hold no provider API keys. The
+gateway obtains a Foundry token with the pipeline UAMI over private networking.
+GPT-5.6-Terra currently serves both aliases. Claude Sonnet 5.5 is declared but
+disabled because Azure returned `MarketplaceSubscriptionCannotBeCompleted` for
+this subscription; enabling it remains a provider-side allowlisting action.
+
+Actions run at maturity tier L1. Policies are enabled, but destructive or
+high-impact response stays approval-gated. The deployment does not silently
+raise autonomy merely because the pipeline and AI model are operational.

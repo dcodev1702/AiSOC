@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import asdict, dataclass
+from datetime import date
 from typing import Any
 
 from sqlalchemy import text
@@ -37,7 +38,7 @@ MAX_LAKE_DAYS = 400
 
 # Data classes we retain, with sane defaults (days).
 DEFAULT_RETENTION: dict[str, int] = {
-    "raw_events": 90,  # ClickHouse lake
+    "raw_events": 365,  # ClickHouse lake — one searchable year for the Azure PoC
     "alerts": 365,  # Postgres alerts
     "audit": 730,  # audit/ledger — longer for compliance
 }
@@ -77,6 +78,21 @@ def build_lake_purge_sql(tenant_id: uuid.UUID, days: int) -> str:
     tid = str(tenant_id)
     # tenant_id is a UUID (validated by type); days is an int literal.
     return f"ALTER TABLE aisoc.raw_events DELETE WHERE tenant_id = '{tid}' AND event_time < now() - INTERVAL {days} DAY"
+
+
+def build_lake_partition_purge_sql(tenant_id: uuid.UUID, event_dates: list[str]) -> str:
+    """Delete only dates whose ADLS archives were just verified.
+
+    Every value is parsed as an ISO date before rendering. An empty list is a
+    hard error so this helper can never fall back to a broad tenant delete.
+    """
+    if not event_dates:
+        raise ValueError("at least one verified archive date is required")
+    rendered = ", ".join(f"toDate('{date.fromisoformat(value).isoformat()}')" for value in sorted(set(event_dates)))
+    return (
+        "ALTER TABLE aisoc.raw_events DELETE WHERE "
+        f"tenant_id = '{uuid.UUID(str(tenant_id))}' AND toDate(event_time) IN ({rendered})"
+    )
 
 
 async def alerts_under_legal_hold(db: Any, tenant_id: uuid.UUID) -> list[governance.LegalHold]:

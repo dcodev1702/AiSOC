@@ -250,6 +250,70 @@ function handleUnauthorized(path: string): void {
   }
 }
 
+let refreshInFlight: Promise<string | null> | null = null;
+
+/**
+ * Exchange the stored refresh token once, even when several dashboard panels
+ * discover an expired access token at the same time.
+ *
+ * This intentionally uses raw `fetch`: routing it through `request()` would
+ * make a rejected refresh recursively try to refresh itself.
+ */
+async function refreshAccessToken(): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = (async () => {
+    let refreshToken: string | null = null;
+    try {
+      refreshToken = window.localStorage.getItem(AUTH_REFRESH_KEY);
+    } catch {
+      return null;
+    }
+    if (!refreshToken) return null;
+
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+        cache: "no-store",
+      });
+      if (!response.ok) return null;
+      const tokens = (await response.json()) as TokenResponse;
+      if (!tokens.access_token) return null;
+      window.localStorage.setItem(AUTH_TOKEN_KEY, tokens.access_token);
+      if (tokens.refresh_token) {
+        window.localStorage.setItem(AUTH_REFRESH_KEY, tokens.refresh_token);
+      }
+      return tokens.access_token;
+    } catch {
+      return null;
+    }
+  })();
+
+  try {
+    return await refreshInFlight;
+  } finally {
+    refreshInFlight = null;
+  }
+}
+
+/** A service-route 401 is not proof that the console session is invalid. */
+async function sessionIsValid(accessToken: string | null): Promise<boolean> {
+  if (!accessToken) return false;
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/auth/me`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+    });
+    return response.ok;
+  } catch {
+    // A network outage must not erase a credential that may still be valid.
+    return true;
+  }
+}
+
 async function request<T>(path: string, options: FetchOptions = {}): Promise<T> {
   const { params, baseUrl, ...fetchOptions } = options;
 
@@ -278,13 +342,37 @@ async function request<T>(path: string, options: FetchOptions = {}): Promise<T> 
     throw new ApiError(`Network error talking to ${url}: ${(err as Error).message}`, 0, "");
   }
 
+  if (
+    response.status === 401 &&
+    !AUTH_EXEMPT_PATHS.some((exempt) => path.startsWith(exempt))
+  ) {
+    const refreshedToken = await refreshAccessToken();
+    if (refreshedToken) {
+      headers.Authorization = `Bearer ${refreshedToken}`;
+      try {
+        response = await fetch(url, {
+          ...fetchOptions,
+          headers,
+          cache: "no-store",
+        });
+      } catch (err) {
+        throw new ApiError(`Network error talking to ${url}: ${(err as Error).message}`, 0, "");
+      }
+    }
+
+    if (response.status === 401) {
+      const authorization = headers.Authorization ?? headers.authorization ?? "";
+      const accessToken = authorization.startsWith("Bearer ")
+        ? authorization.slice("Bearer ".length)
+        : null;
+      if (!(await sessionIsValid(accessToken))) {
+        handleUnauthorized(path);
+      }
+    }
+  }
+
   if (!response.ok) {
     const errorText = await response.text().catch(() => "");
-    if (response.status === 401) {
-      // Self-heal rather than leaving the user on a page where every
-      // panel fails silently and nothing offers a way back.
-      handleUnauthorized(path);
-    }
     throw new ApiError(
       `API ${response.status} ${response.statusText} — ${path}`,
       response.status,

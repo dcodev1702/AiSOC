@@ -15,7 +15,7 @@ from app.services.retention import (
 
 def test_defaults_when_no_config():
     policy = resolve_policy(None)
-    assert policy.raw_events_days == 90
+    assert policy.raw_events_days == 365
     assert policy.alerts_days == 365
     assert policy.audit_days == 730
 

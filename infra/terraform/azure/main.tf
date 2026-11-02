@@ -94,6 +94,45 @@ resource "azurerm_subnet" "privatelink" {
   address_prefixes     = [var.privatelink_subnet_cidr]
 }
 
+# Key Vault remains publicly reachable during this laptop-driven PoC apply,
+# but workloads resolve and use its private endpoint. Public access can be
+# disabled once administration runs through a VNet-connected build agent.
+resource "azurerm_private_dns_zone" "key_vault" {
+  name                = "privatelink.vaultcore.azure.net"
+  resource_group_name = azurerm_resource_group.main.name
+  tags                = var.tags
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "key_vault" {
+  name                  = "${var.name_prefix}-keyvault-link"
+  resource_group_name   = azurerm_resource_group.main.name
+  private_dns_zone_name = azurerm_private_dns_zone.key_vault.name
+  virtual_network_id    = azurerm_virtual_network.main.id
+  registration_enabled  = false
+  tags                  = var.tags
+}
+
+resource "azurerm_private_endpoint" "key_vault" {
+  name                = "${var.name_prefix}-keyvault-pe"
+  location            = local.workload_location
+  resource_group_name = azurerm_resource_group.main.name
+  subnet_id           = azurerm_subnet.privatelink.id
+  tags                = var.tags
+
+  private_service_connection {
+    name                           = "${var.name_prefix}-keyvault-psc"
+    private_connection_resource_id = azurerm_key_vault.main.id
+    subresource_names              = ["vault"]
+    is_manual_connection           = false
+  }
+  private_dns_zone_group {
+    name                 = "keyvault"
+    private_dns_zone_ids = [azurerm_private_dns_zone.key_vault.id]
+  }
+
+  depends_on = [azurerm_private_dns_zone_virtual_network_link.key_vault]
+}
+
 # ─── Observability ───────────────────────────────────────────────────────────
 #
 # Reuse the existing Sentinel-backed Log Analytics workspace. This avoids a

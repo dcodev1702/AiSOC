@@ -29,6 +29,20 @@ sentinel_workspace_name = "replace-with-sentinel-workspace-name"
 # aca_subnet_cidr         = "10.20.0.0/23"   # Container Apps needs at least /23
 # postgres_subnet_cidr    = "10.20.2.0/27"   # delegated to Postgres Flexible Server
 # privatelink_subnet_cidr = "10.20.3.0/27"   # Redis (+ future) private endpoints
+# clickhouse_subnet_cidr  = "10.30.0.0/27"  # single interruptible PoC node
+# clickhouse_vnet_cidr    = "10.30.0.0/16"  # peered cross-region lake VNet
+
+# ─── ClickHouse proof-of-concept lake ───────────────────────────────────────
+
+# ClickHouse Cloud Basic cannot be combined with a customer-selected Spot VM.
+# This stack therefore deploys a Basic-sized self-hosted PoC footprint.
+# D4as_v5 is preferred where permitted. The current North Europe test
+# subscription exposes the equivalent DC4as_v6 Spot SKU instead.
+# clickhouse_location          = "germanywestcentral"
+# clickhouse_vm_size           = "Standard_E2as_v5"
+# clickhouse_data_disk_size_gb = 512
+# poc_tenant_id                  = "00000000-0000-0000-0000-000000000001"
+# clickhouse_image             = "clickhouse/clickhouse-server:25.8-alpine"
 
 # ─── PostgreSQL Flexible Server ──────────────────────────────────────────────
 
@@ -76,6 +90,7 @@ sentinel_workspace_name = "replace-with-sentinel-workspace-name"
 # ─── Access ──────────────────────────────────────────────────────────────────
 
 # cors_origins = "https://app.example.com,https://demo.example.com"
+# operations_email = "soc-operations@example.com"
 
 # ─── Managed-identity AI model plane ─────────────────────────────────────────
 #

@@ -64,6 +64,16 @@ resource "random_password" "litellm_master_key" {
   special = false
 }
 
+resource "random_password" "clickhouse" {
+  length  = 48
+  special = false
+}
+
+resource "random_password" "neo4j" {
+  length  = 48
+  special = false
+}
+
 resource "random_password" "postgres_app" {
   length  = 32
   special = true
@@ -156,6 +166,33 @@ resource "azurerm_key_vault_secret" "realtime_jwt_secret" {
 resource "azurerm_key_vault_secret" "litellm_master_key" {
   name         = "litellm-master-key"
   value        = "sk-${random_password.litellm_master_key.result}"
+  key_vault_id = azurerm_key_vault.main.id
+  tags         = var.tags
+
+  depends_on = [azurerm_role_assignment.deployer_secrets_officer]
+}
+
+resource "azurerm_key_vault_secret" "clickhouse_password" {
+  name         = "clickhouse-password"
+  value        = random_password.clickhouse.result
+  key_vault_id = azurerm_key_vault.main.id
+  tags         = var.tags
+
+  depends_on = [azurerm_role_assignment.deployer_secrets_officer]
+}
+
+resource "azurerm_key_vault_secret" "neo4j_password" {
+  name         = "neo4j-password"
+  value        = random_password.neo4j.result
+  key_vault_id = azurerm_key_vault.main.id
+  tags         = var.tags
+
+  depends_on = [azurerm_role_assignment.deployer_secrets_officer]
+}
+
+resource "azurerm_key_vault_secret" "clickhouse_ssh_private_key" {
+  name         = "clickhouse-ssh-private-key"
+  value        = tls_private_key.clickhouse_admin.private_key_openssh
   key_vault_id = azurerm_key_vault.main.id
   tags         = var.tags
 

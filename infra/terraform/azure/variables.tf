@@ -72,6 +72,72 @@ variable "privatelink_subnet_cidr" {
   default     = "10.20.3.0/27"
 }
 
+variable "clickhouse_subnet_cidr" {
+  description = "Private subnet for the interruptible ClickHouse PoC node."
+  type        = string
+  default     = "10.30.0.0/27"
+}
+
+variable "clickhouse_vnet_cidr" {
+  description = "Address space for the peered ClickHouse/Neo4j Spot VNet. It must not overlap the workload VNet."
+  type        = string
+  default     = "10.30.0.0/16"
+}
+
+variable "clickhouse_location" {
+  description = "Region for the interruptible ClickHouse/Neo4j node. Germany West Central has eligible Spot capacity for this subscription and is privately peered to the North Europe workload VNet."
+  type        = string
+  default     = "germanywestcentral"
+}
+
+# ─── ClickHouse proof-of-concept lake ───────────────────────────────────────
+
+variable "clickhouse_vm_size" {
+  description = "Spot VM size for the single-node PoC lake. E2as_v5 gives the low-traffic PoC 2 vCPU and 16 GiB within the subscription's 3-core Spot quota; evidence stays on the managed Standard SSD."
+  type        = string
+  default     = "Standard_E2as_v5"
+}
+
+variable "clickhouse_admin_username" {
+  description = "Local administrator name for Azure Run Command/Bastion recovery. Password login and Internet SSH are disabled."
+  type        = string
+  default     = "aisocadmin"
+}
+
+variable "clickhouse_data_disk_size_gb" {
+  description = "Standard SSD LRS capacity for one year of low-volume searchable PoC events."
+  type        = number
+  default     = 512
+
+  validation {
+    condition     = var.clickhouse_data_disk_size_gb >= 128 && var.clickhouse_data_disk_size_gb <= 32767
+    error_message = "clickhouse_data_disk_size_gb must be between 128 and 32767 GiB."
+  }
+}
+
+variable "clickhouse_image" {
+  description = "ClickHouse server image bootstrapped on the Spot VM. Pin a tested patch tag before promoting beyond the PoC."
+  type        = string
+  default     = "clickhouse/clickhouse-server:25.8-alpine"
+}
+
+variable "poc_tenant_id" {
+  description = "Tenant UUID used by single-tenant PoC background schedulers. Empty disables tenant-scoped corpus execution."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.poc_tenant_id == "" || can(regex("^[0-9a-fA-F-]{36}$", var.poc_tenant_id))
+    error_message = "poc_tenant_id must be empty or a UUID."
+  }
+}
+
+variable "neo4j_image" {
+  description = "Neo4j Community image co-hosted on the low-traffic PoC Spot node. Keep this digest pinned."
+  type        = string
+  default     = "neo4j:5.26-community@sha256:fe8607113c4177fbd2466bf2c30f1ebab5b9530594e86487c58c98e113145192"
+}
+
 # ─── PostgreSQL Flexible Server ──────────────────────────────────────────────
 
 variable "postgres_sku" {
@@ -137,6 +203,12 @@ variable "eventhub_message_retention_days" {
   }
 }
 
+variable "operations_email" {
+  description = "Optional email receiver for Azure Monitor operational alerts."
+  type        = string
+  default     = ""
+}
+
 # ─── Container Apps ──────────────────────────────────────────────────────────
 
 variable "api_image" {
@@ -179,6 +251,12 @@ variable "agents_image" {
   description = "Container image for the always-on AI agents service."
   type        = string
   default     = "ghcr.io/beenuar/aisoc-agents:latest"
+}
+
+variable "ueba_image" {
+  description = "Container image for the always-on UEBA scorer."
+  type        = string
+  default     = "ghcr.io/beenuar/aisoc-ueba:latest"
 }
 
 variable "realtime_image" {

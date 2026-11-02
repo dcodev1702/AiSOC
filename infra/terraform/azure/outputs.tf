@@ -41,6 +41,38 @@ output "postgres_admin_user" {
   value       = var.postgres_user
 }
 
+# ─── ClickHouse PoC lake ────────────────────────────────────────────────────
+
+output "clickhouse_vm_name" {
+  description = "Single-node Spot VM hosting the ClickHouse container."
+  value       = azurerm_linux_virtual_machine.clickhouse.name
+}
+
+output "clickhouse_vm_size" {
+  description = "Effective Spot VM SKU selected for the ClickHouse PoC."
+  value       = azurerm_linux_virtual_machine.clickhouse.size
+}
+
+output "clickhouse_private_ip" {
+  description = "VNet-only ClickHouse endpoint used by API, fusion, and agents."
+  value       = local.clickhouse_private_ip
+}
+
+output "clickhouse_password_secret_name" {
+  description = "Key Vault secret containing the generated ClickHouse application password."
+  value       = azurerm_key_vault_secret.clickhouse_password.name
+}
+
+output "lake_storage_account_name" {
+  description = "ADLS Gen2 Standard_LRS account holding Parquet archive and backups."
+  value       = azurerm_storage_account.lake.name
+}
+
+output "lake_dfs_endpoint" {
+  description = "Private ADLS Gen2 DFS endpoint."
+  value       = azurerm_storage_account.lake.primary_dfs_endpoint
+}
+
 # ─── Azure Managed Redis ─────────────────────────────────────────────────────
 
 output "redis_hostname" {

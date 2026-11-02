@@ -44,6 +44,17 @@ _POSITIVE_FLOOR = 1.0
 _NEGATIVE_CEILING = 0.0
 
 
+def test_packaged_hunt_corpus_matches_the_repository_source() -> None:
+    """The agents image copies only ``app/``; scheduled hunts must live there."""
+
+    repo = Path(__file__).resolve().parents[3]
+    source = repo / "hunts"
+    packaged = repo / "services" / "agents" / "app" / "hunt" / "corpus"
+    assert sorted(path.name for path in packaged.glob("*.yaml")) == sorted(path.name for path in source.glob("*.yaml"))
+    for path in source.glob("*.yaml"):
+        assert (packaged / path.name).read_bytes() == path.read_bytes()
+
+
 def _load_hunt_corpus() -> list[HuntDefinition]:
     """Load the YAML hunt corpus from ``hunts/`` (repo root)."""
     corpus = HuntCorpus()

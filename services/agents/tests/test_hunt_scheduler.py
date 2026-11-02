@@ -17,6 +17,21 @@ class _Corpus:
         return [self._hunt]
 
 
+def test_scheduler_uses_the_configured_tenant_uuid(monkeypatch: pytest.MonkeyPatch) -> None:
+    tenant_id = "00000000-0000-0000-0000-000000000001"
+    monkeypatch.setenv("AISOC_DEFAULT_TENANT_ID", tenant_id)
+    monkeypatch.setattr(scheduler_module, "_INSTANCE", None)
+
+    assert scheduler_module.get_scheduler()._tenant_ref == tenant_id
+
+
+def test_scheduler_refuses_a_non_uuid_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AISOC_DEFAULT_TENANT_ID", "default")
+    monkeypatch.setattr(scheduler_module, "_INSTANCE", None)
+
+    assert scheduler_module.get_scheduler()._tenant_ref == ""
+
+
 @pytest.mark.asyncio
 async def test_failed_hunt_is_retried_on_next_tick(monkeypatch: pytest.MonkeyPatch) -> None:
     hunt = HuntDefinition(

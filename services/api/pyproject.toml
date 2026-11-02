@@ -127,6 +127,12 @@ croniter = ">=2.0,<7.0"
 # would surface as a rebalance nobody could explain. Only used by
 # `app.workers.retro_hunt_consumer`, which is off by default.
 aiokafka = ">=0.10,<0.15"
+# Azure jobs use the existing pipeline UAMI for ADLS archive/backup writes.
+# aiohttp is explicit because azure.identity.aio leaves its async transport
+# optional; without it token acquisition fails only at runtime.
+azure-identity = ">=1.27,<2"
+azure-storage-blob = ">=12.27,<13"
+aiohttp = ">=3.14.3,<4"
 # The SAML routes import `onelogin.saml2`, and this was declared in no
 # install path at all. `app/auth/saml.py` caught the resulting ImportError
 # and issued a signed session for a principal called `stub-saml-user` that

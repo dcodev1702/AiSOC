@@ -8,6 +8,14 @@
 terraform {
   required_version = ">= 1.5"
 
+  backend "azurerm" {
+    resource_group_name  = "aisoc-tfstate-rg"
+    storage_account_name = "aisoctfstate2c6d3f6e"
+    container_name       = "tfstate"
+    key                  = "aisocdev.tfstate"
+    use_azuread_auth     = true
+  }
+
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
@@ -21,25 +29,18 @@ terraform {
       source  = "Azure/azapi"
       version = "~> 2.4"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.1"
+    }
   }
 
-  # State backend left intentionally unconfigured. Pick one of:
-  #
-  #   backend "azurerm" {
-  #     resource_group_name  = "aisoc-tfstate-rg"
-  #     storage_account_name = "aisoctfstate<suffix>"
-  #     container_name       = "tfstate"
-  #     key                  = "azure.tfstate"
-  #   }
-  #   backend "local" {}
-  #
-  # …and bootstrap the storage account once per subscription before
-  # `terraform init`. See the README for the bootstrap commands.
 }
 
 provider "azurerm" {
   subscription_id                 = var.subscription_id != "" ? var.subscription_id : null
   resource_provider_registrations = "none"
+  storage_use_azuread             = true
 
   features {
     key_vault {

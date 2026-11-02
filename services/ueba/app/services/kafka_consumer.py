@@ -71,6 +71,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import settings
+from app.core.database import normalize_asyncpg_url
 from app.core.kafka_security import kafka_client_kwargs
 from app.services.dead_letters import DeadLetterSink
 from app.services.feature_extraction import extract
@@ -82,7 +83,8 @@ LOG = logging.getLogger(__name__)
 
 class UEBAKafkaConsumer:
     def __init__(self) -> None:
-        self._engine = create_async_engine(settings.database_url, pool_size=5)
+        database_url, connect_args = normalize_asyncpg_url(settings.database_url)
+        self._engine = create_async_engine(database_url, pool_size=5, connect_args=connect_args)
         self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
         self._running = False
         # True only while the ``async for`` is iterating a started consumer.

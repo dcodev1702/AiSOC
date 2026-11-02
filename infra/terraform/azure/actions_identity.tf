@@ -157,6 +157,10 @@ resource "azurerm_container_app" "actions" {
         name  = "AISOC_ACTIONS_REQUIRE_APPROVER"
         value = "true"
       }
+      env {
+        name  = "AISOC_MATURITY_TIER"
+        value = "L1"
+      }
     }
   }
 

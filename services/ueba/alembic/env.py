@@ -33,6 +33,7 @@ from logging.config import fileConfig
 
 import sqlalchemy as sa
 from alembic import context
+from app.core.database import normalize_asyncpg_url
 from app.models.ueba import Base
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -189,7 +190,8 @@ def do_run_migrations(connection):  # type: ignore[no-untyped-def]
 
 
 async def run_migrations_online() -> None:
-    engine = create_async_engine(DATABASE_URL)
+    database_url, connect_args = normalize_asyncpg_url(DATABASE_URL)
+    engine = create_async_engine(database_url, connect_args=connect_args)
     async with engine.begin() as conn:
         await conn.run_sync(do_run_migrations)
     await engine.dispose()

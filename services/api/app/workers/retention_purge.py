@@ -60,7 +60,7 @@ from app.db.database import AsyncSessionLocal
 from app.services.retention import (
     _clamp,
     alerts_under_legal_hold,
-    build_lake_purge_sql,
+    build_lake_partition_purge_sql,
     may_purge,
     resolve_policy,
 )
@@ -72,6 +72,10 @@ logger = logging.getLogger("aisoc.retention_purge")
 # returns as soon as the mutation is queued. Waiting makes the worker's own
 # logs truthful about what has actually been removed.
 _MUTATIONS_SYNC = {"mutations_sync": 1}
+
+
+class ArchiveVerificationError(RuntimeError):
+    """An aged lake partition has no current, completed ADLS archive."""
 
 
 @dataclass
@@ -232,7 +236,45 @@ async def _tenant_is_held(db: AsyncSession, tenant_id: uuid.UUID) -> list[str]:
     return sorted({hold.matter_ref or hold.id for hold in holds})
 
 
-async def _purge_lake(tenant_id: uuid.UUID, days: int, *, dry_run: bool) -> int:
+async def _verified_archive_dates(db: AsyncSession, tenant_id: uuid.UUID, days: int) -> list[str]:
+    """Return all aged dates only when their source metadata matches ADLS.
+
+    A missing/failed/held export or a late event makes the ledger mismatch and
+    fails the whole tenant sweep closed.
+    """
+    days = _clamp(days)
+    source = await execute_lake_query(
+        "SELECT toDate(event_time), count(), max(ingest_time) "
+        "FROM aisoc.raw_events "
+        f"WHERE tenant_id = '{uuid.UUID(str(tenant_id))}' AND event_time < now() - INTERVAL {days} DAY "
+        "GROUP BY toDate(event_time) ORDER BY toDate(event_time)"
+    )
+    if not source.rows:
+        return []
+    rows = await db.execute(
+        text("""
+            SELECT event_date, row_count, max_ingest_time
+              FROM lake_archive_exports
+             WHERE tenant_id = CAST(:tenant_id AS uuid)
+               AND status = 'completed' AND legal_hold = false
+        """),
+        {"tenant_id": str(tenant_id)},
+    )
+    archived = {str(row[0]): (int(row[1]), row[2]) for row in rows.all()}
+    verified: list[str] = []
+    missing: list[str] = []
+    for event_date, row_count, max_ingest_time in source.rows:
+        day = str(event_date)
+        if archived.get(day) != (int(row_count), max_ingest_time):
+            missing.append(day)
+        else:
+            verified.append(day)
+    if missing:
+        raise ArchiveVerificationError("archive missing or stale for aged partition(s): " + ", ".join(missing))
+    return verified
+
+
+async def _purge_lake(db: AsyncSession, tenant_id: uuid.UUID, days: int, *, dry_run: bool) -> int:
     """Delete (or count) lake events past the window. Returns the row count.
 
     ClickHouse ``ALTER TABLE … DELETE`` does not report affected rows, so even
@@ -245,8 +287,11 @@ async def _purge_lake(tenant_id: uuid.UUID, days: int, *, dry_run: bool) -> int:
     if doomed == 0 or dry_run:
         return doomed
 
+    verified_dates = await _verified_archive_dates(db, tenant_id, days)
+    if not verified_dates:
+        raise ArchiveVerificationError("aged rows exist but no verified archive dates were returned")
     await execute_lake_query(
-        build_lake_purge_sql(tenant_id, days),
+        build_lake_partition_purge_sql(tenant_id, verified_dates),
         extra_settings=_MUTATIONS_SYNC,
     )
     return doomed
@@ -362,7 +407,7 @@ async def run_once(
             # a tenant with nothing to purge.
             held = result.held
             try:
-                purged = await _purge_lake(tenant_id, policy.raw_events_days, dry_run=dry_run or held)
+                purged = await _purge_lake(db, tenant_id, policy.raw_events_days, dry_run=dry_run or held)
                 if held:
                     result.held_lake_rows = purged
                 else:

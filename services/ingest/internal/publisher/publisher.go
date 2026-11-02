@@ -28,7 +28,14 @@ type Publisher struct {
 
 // New creates a new Kafka publisher
 func New(cfg *config.Config) (*Publisher, error) {
-	// Resolved once and shared by all three writers. kafka-go's zero
+	// Resolve the policy once, but give each writer its own kafka.Transport
+	// and therefore its own connection pool. Azure Event Hubs can return
+	// responses for concurrently active topics out of correlation-id order
+	// when three kafka-go writers multiplex through one shared Transport. A
+	// graph update then poisons the raw-event writer's next request with
+	// "correlation id mismatch". The TLS and managed-identity mechanism are
+	// still the same; only the broker connections are isolated by workload.
+	// kafka-go's zero
 	// Transport means plaintext, and none of them set one, so the ingest
 	// service — the front door for every normalized event — spoke cleartext
 	// to the broker. Resolve returns an error rather than a default in a
@@ -38,10 +45,9 @@ func New(cfg *config.Config) (*Publisher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kafka transport: %w", err)
 	}
-	kafkaTransport := transport.WriterTransport()
 
 	w := &kafka.Writer{
-		Transport:              kafkaTransport,
+		Transport:              transport.WriterTransport(),
 		Addr:                   kafka.TCP(cfg.KafkaBrokers),
 		Topic:                  cfg.KafkaTopic,
 		Balancer:               &kafka.Hash{},
@@ -54,7 +60,7 @@ func New(cfg *config.Config) (*Publisher, error) {
 	var vulnWriter *kafka.Writer
 	if cfg.VulnCorrelEnabled && cfg.VulnKafkaTopic != "" {
 		vulnWriter = &kafka.Writer{
-			Transport:              kafkaTransport,
+			Transport:              transport.WriterTransport(),
 			Addr:                   kafka.TCP(cfg.KafkaBrokers),
 			Topic:                  cfg.VulnKafkaTopic,
 			Balancer:               &kafka.Hash{},
@@ -70,7 +76,7 @@ func New(cfg *config.Config) (*Publisher, error) {
 	var graphWriter *kafka.Writer
 	if cfg.GraphUpdatesTopic != "" {
 		graphWriter = &kafka.Writer{
-			Transport:              kafkaTransport,
+			Transport:              transport.WriterTransport(),
 			Addr:                   kafka.TCP(cfg.KafkaBrokers),
 			Topic:                  cfg.GraphUpdatesTopic,
 			Balancer:               &kafka.Hash{},

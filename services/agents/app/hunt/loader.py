@@ -126,6 +126,9 @@ def _resolve_corpus_dir() -> Path:
     if env_dir:
         return Path(env_dir).expanduser().resolve()
     here = Path(__file__).resolve()
+    packaged = here.parent / "corpus"
+    if packaged.is_dir():
+        return packaged
     for candidate in here.parents:
         d = candidate / "hunts"
         if d.is_dir():

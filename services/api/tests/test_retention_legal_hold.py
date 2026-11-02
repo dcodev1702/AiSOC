@@ -130,6 +130,11 @@ def patched(monkeypatch: pytest.MonkeyPatch):
         lake_recorder = _LakeRecorder(lake)
         monkeypatch.setattr(retention_purge, "execute_lake_query", lake_recorder)
 
+        async def _verified(_db: Any, tenant_id: uuid.UUID, _days: int) -> list[str]:
+            return ["2025-01-01"] if lake.get(tenant_id, 0) else []
+
+        monkeypatch.setattr(retention_purge, "_verified_archive_dates", _verified)
+
         async def _no_assert(*_a: Any, **_k: Any) -> None:
             return None
 

@@ -22,12 +22,16 @@ read absence as "all good".
 Per-stage definitions
 ---------------------
 
-* **ingest** — events arriving from connectors. ``status`` aggregates
-  ``app.services.connector_freshness`` across all enabled connectors
-  (worst-of). ``backlog`` is the number of enabled connectors that
-  haven't fired an event within 2× their per-category cadence (the
-  ``red`` band in ``connector_freshness``). ``error_rate`` is
-  ``unhealthy / enabled`` from ``Connector.health_status``.
+* **ingest** — events arriving from connectors. ``status`` uses recent
+  downstream alert creation as positive proof that the shared ingest path is
+  flowing, then falls back to the worst connector freshness verdict when no
+  event has traversed the pipeline recently. ``backlog`` is the number of
+  enabled connectors that haven't fired an event within 2× their per-category
+  cadence (the ``red`` band in ``connector_freshness``). ``error_rate`` is
+  ``unhealthy / enabled`` from ``Connector.health_status``. Per-connector
+  degradation remains visible in those two fields and on the connector-health
+  page; a stale connector alone no longer paints the entire ingest service red
+  while other events are demonstrably being accepted and persisted.
   ``p95_latency_ms`` is left at 0 — we don't carry a source-side
   timestamp on the wire to compute true ingest lag.
 
@@ -154,7 +158,13 @@ def _p95_seconds_expr(expr: Any) -> Any:
 # ─────────────────────────────── ingest stage ────────────────────────────────
 
 
-async def _ingest_stage(db, tenant_id, *, now: datetime) -> PipelineStage:
+async def _ingest_stage(
+    db,
+    tenant_id,
+    *,
+    now: datetime,
+    recent_window_seconds: int = 600,
+) -> PipelineStage:
     """Build the ``ingest`` row from connector freshness aggregates.
 
     Reads every Connector for the tenant, runs ``compute_freshness``
@@ -174,17 +184,30 @@ async def _ingest_stage(db, tenant_id, *, now: datetime) -> PipelineStage:
         )
     ).all()
 
+    # Connector.last_event_at is maintained by the scheduled connector
+    # service. Direct ingest, Event Hubs replay, and other valid producers do
+    # not own a Connector row, so connector freshness alone can report a red
+    # pipeline while events are visibly reaching the alert store. A recent
+    # downstream alert is stronger, end-to-end proof that ingest is alive.
+    recent_alert_at = await db.scalar(
+        select(func.max(Alert.created_at)).where(Alert.tenant_id == tenant_id)
+    )
+    recent_flow = False
+    if isinstance(recent_alert_at, datetime):
+        latest = recent_alert_at if recent_alert_at.tzinfo else recent_alert_at.replace(tzinfo=UTC)
+        current = now if now.tzinfo else now.replace(tzinfo=UTC)
+        recent_flow = (current - latest) <= timedelta(seconds=max(1, recent_window_seconds))
+
     enabled = [r for r in rows if r.is_enabled]
     if not enabled:
-        # No enabled connectors → nothing is flowing on purpose. Status
-        # ``unknown`` rather than red so a fresh tenant doesn't see a
-        # paged alert before they've onboarded anything.
+        # Direct/Event-Hubs producers may be active without a Connector row.
+        # Otherwise a fresh tenant remains unknown rather than falsely green.
         return PipelineStage(
             stage="ingest",
             backlog=0,
             p95_latency_ms=0.0,
             error_rate=0.0,
-            status="unknown",
+            status="green" if recent_flow else "unknown",
             unmeasured=["backlog", "p95_latency_ms", "error_rate"],
         )
 
@@ -210,12 +233,21 @@ async def _ingest_stage(db, tenant_id, *, now: datetime) -> PipelineStage:
             unhealthy += 1
 
     error_rate = round(unhealthy / len(enabled), 4) if enabled else 0.0
+    connector_status = _worst_status(statuses)
+    if recent_flow:
+        # Current persisted flow proves that the shared ingest path is up. A
+        # connector that is explicitly unhealthy still warrants a degraded
+        # (yellow) stage, while stale connector detail remains in backlog.
+        stage_status = "yellow" if unhealthy else "green"
+    else:
+        stage_status = connector_status
+
     return PipelineStage(
         stage="ingest",
         backlog=backlog,
         p95_latency_ms=0.0,
         error_rate=error_rate,
-        status=_worst_status(statuses),
+        status=stage_status,
         unmeasured=["p95_latency_ms"],
     )
 
@@ -488,7 +520,12 @@ async def get_pipeline_health(
     down_seconds = int(getattr(settings, "AISOC_PIPELINE_STALE_DOWN_SECONDS", 1800) or 1800)
 
     stages = [
-        await _ingest_stage(db, user.tenant_id, now=now),
+        await _ingest_stage(
+            db,
+            user.tenant_id,
+            now=now,
+            recent_window_seconds=warn_seconds,
+        ),
         await _normalize_stage(
             db,
             user.tenant_id,

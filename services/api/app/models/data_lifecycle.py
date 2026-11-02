@@ -16,7 +16,7 @@ class RetentionPolicyRow(Base):
     __tablename__ = "retention_policies"
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    raw_events_days: Mapped[int] = mapped_column(Integer, default=90)
+    raw_events_days: Mapped[int] = mapped_column(Integer, default=365)
     alerts_days: Mapped[int] = mapped_column(Integer, default=365)
     audit_days: Mapped[int] = mapped_column(Integer, default=730)
     updated_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)

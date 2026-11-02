@@ -12,6 +12,7 @@ locals {
     "aisoc.alerts.fused.dlq",
     "aisoc.vulnerability_matches",
     "security.graph_updates",
+    "ueba.anomalies",
   ])
   eventhub_consumer_groups = {
     "aisoc.raw_events/aisoc-fusion-consumer"      = ["aisoc.raw_events", "aisoc-fusion-consumer"]
@@ -19,6 +20,8 @@ locals {
     "aisoc.alerts.fused/aisoc-agents-triage"      = ["aisoc.alerts.fused", "aisoc-agents-triage"]
     "aisoc.alerts.fused/aisoc-realtime-ws"        = ["aisoc.alerts.fused", "aisoc-realtime-ws"]
     "security.graph_updates/aisoc-realtime-graph" = ["security.graph_updates", "aisoc-realtime-graph"]
+    "aisoc.raw_events/aisoc-ueba-consumer"        = ["aisoc.raw_events", "aisoc-ueba-consumer"]
+    "ueba.anomalies/aisoc-fusion-consumer"        = ["ueba.anomalies", "aisoc-fusion-consumer"]
   }
 }
 

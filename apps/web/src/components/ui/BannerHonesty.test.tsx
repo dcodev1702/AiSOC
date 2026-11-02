@@ -95,7 +95,7 @@ describe('ConnectorsView — the banner describes what is on screen', () => {
     render(<ConnectorsView />);
 
     expect(screen.queryByText(/showing demo instances/i)).toBeNull();
-    expect(screen.getByText(/could not be loaded/i)).toBeTruthy();
+    expect(screen.getAllByText(/could not be loaded/i).length).toBeGreaterThan(0);
     for (const name of FABRICATED) {
       expect(screen.queryByText(name)).toBeNull();
     }

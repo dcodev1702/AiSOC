@@ -124,6 +124,25 @@ class TestLakeRunner:
         await lake_migrations.run_migrations(c)
         assert c.command.await_count > 0
 
+    async def test_drives_the_synchronous_clickhouse_driver_used_in_azure(self) -> None:
+        """The Azure API uses clickhouse-driver, whose ``execute`` returns a
+        list immediately. Awaiting that list disabled every startup migration."""
+
+        class SyncClient:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, Any]] = []
+
+            def execute(self, sql: str, params: Any = None) -> list[Any]:
+                self.calls.append((sql, params))
+                return []
+
+        client = SyncClient()
+        await lake_migrations.run_migrations(client)
+        assert any("_migrations" in sql for sql, _params in client.calls)
+        inserts = [(sql, params) for sql, params in client.calls if "INSERT INTO" in sql]
+        assert inserts
+        assert all(isinstance(params, list) and len(params) == 1 for _sql, params in inserts)
+
     async def test_an_undrivable_client_is_a_loud_failure(self) -> None:
         class Opaque:
             pass

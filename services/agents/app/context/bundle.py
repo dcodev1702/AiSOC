@@ -700,6 +700,10 @@ class ContextBundleBuilder:
     ) -> dict[str, UEBABaseline]:
         """Pull per-entity UEBA baselines from the UEBA service."""
         ueba_url = os.getenv("AISOC_UEBA_URL", "http://ueba:8086")
+        service_token = os.getenv("AISOC_UEBA_SERVICE_TOKEN", "").strip() or os.getenv("AISOC_SERVICE_TOKEN", "").strip()
+        headers = {"X-AiSOC-Tenant-ID": tenant_id}
+        if service_token:
+            headers["Authorization"] = f"Bearer {service_token}"
         principals = [e for e in entities if e.type in ("user", "email", "host", "ip")]
         if not principals:
             self._record_source("ueba")
@@ -717,6 +721,7 @@ class ContextBundleBuilder:
                     resp = await client.get(
                         f"{ueba_url}/api/v1/ueba/baselines",
                         params={"tenant_id": tenant_id, "entity_type": entity.type, "limit": 50},
+                        headers=headers,
                     )
                     resp.raise_for_status()
                     rows = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else []

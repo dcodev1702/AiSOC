@@ -118,6 +118,16 @@ resource "azurerm_container_app" "api" {
     identity            = azurerm_user_assigned_identity.runtime.id
     key_vault_secret_id = azurerm_key_vault_secret.litellm_master_key.versionless_id
   }
+  secret {
+    name                = "clickhouse-password"
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.clickhouse_password.versionless_id
+  }
+  secret {
+    name                = "neo4j-password"
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.neo4j_password.versionless_id
+  }
   dynamic "secret" {
     for_each = toset(var.openai_api_key == "" ? [] : ["openai"])
     content {
@@ -205,6 +215,22 @@ resource "azurerm_container_app" "api" {
       env {
         name  = "REDIS_SSL"
         value = "true"
+      }
+      env {
+        name  = "CLICKHOUSE_HOST"
+        value = local.clickhouse_private_ip
+      }
+      env {
+        name  = "CLICKHOUSE_PORT"
+        value = "9000"
+      }
+      env {
+        name  = "CLICKHOUSE_DATABASE"
+        value = "aisoc"
+      }
+      env {
+        name  = "CLICKHOUSE_USER"
+        value = "aisoc"
       }
       env {
         name  = "CORS_ORIGINS"
@@ -312,9 +338,57 @@ resource "azurerm_container_app" "api" {
         name        = "AISOC_SERVICE_TOKEN"
         secret_name = "service-token"
       }
+      # Internal context, MCP registry, and governed source-writeback routes
+      # deliberately accept only the agents-specific name.  Point both names
+      # at the same Key Vault secret until workload-identity HTTP auth replaces
+      # the transitional shared token.
+      env {
+        name        = "AISOC_AGENTS_SERVICE_TOKEN"
+        secret_name = "service-token"
+      }
       env {
         name        = "AISOC_ACTIONS_SERVICE_TOKEN"
         secret_name = "service-token"
+      }
+      env {
+        name  = "HUNT_SCHEDULER_ENABLED"
+        value = "true"
+      }
+      env {
+        name  = "RETENTION_WORKER_ENABLED"
+        value = "true"
+      }
+      env {
+        name  = "RETENTION_WORKER_DRY_RUN"
+        value = "false"
+      }
+      env {
+        name  = "AISOC_LAKE_STORAGE_URL"
+        value = azurerm_storage_account.lake.primary_blob_endpoint
+      }
+      env {
+        name  = "AZURE_CLIENT_ID"
+        value = azurerm_user_assigned_identity.runtime.client_id
+      }
+      env {
+        name  = "NEO4J_URI"
+        value = "bolt://${local.clickhouse_private_ip}:7687"
+      }
+      env {
+        name  = "NEO4J_USER"
+        value = "neo4j"
+      }
+      env {
+        name        = "NEO4J_PASSWORD"
+        secret_name = "neo4j-password"
+      }
+      env {
+        name  = "AISOC_SIEM_WRITEBACK_EXECUTE"
+        value = "true"
+      }
+      env {
+        name  = "AISOC_SIEM_WRITEBACK_CLOSE_CASE"
+        value = "false"
       }
       env {
         name        = "JWT_SECRET"
@@ -332,6 +406,10 @@ resource "azurerm_container_app" "api" {
         name        = "LITELLM_MASTER_KEY"
         secret_name = "litellm-master-key"
       }
+      env {
+        name        = "CLICKHOUSE_PASSWORD"
+        secret_name = "clickhouse-password"
+      }
       dynamic "env" {
         for_each = toset(var.openai_api_key == "" ? [] : ["openai"])
         content {
@@ -346,6 +424,7 @@ resource "azurerm_container_app" "api" {
     azurerm_role_assignment.acr_pull,
     azurerm_role_assignment.kv_secrets_user,
     azurerm_postgresql_flexible_server_database.aisoc,
+    azurerm_virtual_machine_data_disk_attachment.clickhouse_data,
   ]
 }
 
@@ -473,6 +552,11 @@ resource "azurerm_container_app" "ingest" {
     identity            = azurerm_user_assigned_identity.pipeline.id
     key_vault_secret_id = azurerm_key_vault_secret.jwt_secret.versionless_id
   }
+  secret {
+    name                = "neo4j-password"
+    identity            = azurerm_user_assigned_identity.pipeline.id
+    key_vault_secret_id = azurerm_key_vault_secret.neo4j_password.versionless_id
+  }
 
   ingress {
     external_enabled = true
@@ -526,6 +610,22 @@ resource "azurerm_container_app" "ingest" {
       env {
         name  = "KAFKA_TOPIC"
         value = "aisoc.raw_events"
+      }
+      env {
+        name  = "AISOC_GRAPH_ENABLED"
+        value = "true"
+      }
+      env {
+        name  = "AISOC_NEO4J_URI"
+        value = "bolt://${local.clickhouse_private_ip}:7687"
+      }
+      env {
+        name  = "AISOC_NEO4J_USER"
+        value = "neo4j"
+      }
+      env {
+        name        = "AISOC_NEO4J_PASSWORD"
+        secret_name = "neo4j-password"
       }
       env {
         name  = "POSTGRES_DB"

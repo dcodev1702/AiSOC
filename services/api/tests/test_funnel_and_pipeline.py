@@ -513,6 +513,7 @@ class TestIngestStage:
         # pill on the dashboard would page them gratuitously.
         db = MagicMock()
         db.execute = AsyncMock(return_value=_execute_result_all([]))
+        db.scalar = AsyncMock(return_value=None)
 
         stage = await _ingest_stage(db, uuid.uuid4(), now=datetime.now(UTC))
         assert stage.stage == "ingest"
@@ -527,6 +528,7 @@ class TestIngestStage:
 
         db = MagicMock()
         db.execute = AsyncMock(return_value=_execute_result_all([_connector_row(is_enabled=False)]))
+        db.scalar = AsyncMock(return_value=None)
         stage = await _ingest_stage(db, uuid.uuid4(), now=datetime.now(UTC))
         assert stage.status == "unknown"
         assert stage.backlog == 0
@@ -539,6 +541,7 @@ class TestIngestStage:
         # EDR cadence is 5 min → 1 min ago is well within green.
         recent = now - timedelta(minutes=1)
         db = MagicMock()
+        db.scalar = AsyncMock(return_value=None)
         db.execute = AsyncMock(
             return_value=_execute_result_all(
                 [
@@ -560,6 +563,7 @@ class TestIngestStage:
         now = datetime.now(UTC)
         # 1 healthy + 1 way past 2× EDR cadence (5 min × 2 = 10 min).
         db = MagicMock()
+        db.scalar = AsyncMock(return_value=None)
         db.execute = AsyncMock(
             return_value=_execute_result_all(
                 [
@@ -581,6 +585,7 @@ class TestIngestStage:
         now = datetime.now(UTC)
         recent = now - timedelta(minutes=1)
         db = MagicMock()
+        db.scalar = AsyncMock(return_value=None)
         db.execute = AsyncMock(
             return_value=_execute_result_all(
                 [
@@ -621,6 +626,7 @@ class TestIngestStage:
         # would be RED (> 2× cadence). With override=3600 (1h), it's
         # still GREEN (≤ cadence).
         db = MagicMock()
+        db.scalar = AsyncMock(return_value=None)
         db.execute = AsyncMock(
             return_value=_execute_result_all(
                 [
@@ -635,6 +641,62 @@ class TestIngestStage:
 
         stage = await _ingest_stage(db, uuid.uuid4(), now=now)
         assert stage.status == "green"
+
+    @pytest.mark.asyncio
+    async def test_recent_persisted_flow_overrides_stale_connector_status(self) -> None:
+        from app.api.v1.endpoints.health import _ingest_stage
+
+        now = datetime.now(UTC)
+        db = MagicMock()
+        db.scalar = AsyncMock(return_value=now - timedelta(seconds=30))
+        db.execute = AsyncMock(
+            return_value=_execute_result_all(
+                [_connector_row(category="siem", last_event_at=now - timedelta(hours=2))]
+            )
+        )
+
+        stage = await _ingest_stage(db, uuid.uuid4(), now=now)
+
+        assert stage.status == "green"
+        assert stage.backlog == 1
+
+    @pytest.mark.asyncio
+    async def test_direct_ingest_without_connector_is_green_when_flow_is_recent(self) -> None:
+        from app.api.v1.endpoints.health import _ingest_stage
+
+        now = datetime.now(UTC)
+        db = MagicMock()
+        db.scalar = AsyncMock(return_value=now - timedelta(seconds=30))
+        db.execute = AsyncMock(return_value=_execute_result_all([]))
+
+        stage = await _ingest_stage(db, uuid.uuid4(), now=now)
+
+        assert stage.status == "green"
+        assert stage.backlog == 0
+
+    @pytest.mark.asyncio
+    async def test_recent_flow_with_unhealthy_connector_is_degraded(self) -> None:
+        from app.api.v1.endpoints.health import _ingest_stage
+
+        now = datetime.now(UTC)
+        db = MagicMock()
+        db.scalar = AsyncMock(return_value=now - timedelta(seconds=30))
+        db.execute = AsyncMock(
+            return_value=_execute_result_all(
+                [
+                    _connector_row(
+                        category="siem",
+                        last_event_at=now - timedelta(hours=2),
+                        health_status="unhealthy",
+                    )
+                ]
+            )
+        )
+
+        stage = await _ingest_stage(db, uuid.uuid4(), now=now)
+
+        assert stage.status == "yellow"
+        assert stage.error_rate == 1.0
 
 
 class TestNormalizeStage:
@@ -1055,6 +1117,7 @@ class TestEveryPlaceholderZeroDeclaresItself:
 
         db = MagicMock()
         db.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        db.scalar = AsyncMock(return_value=None)
 
         stage = await _ingest_stage(db, uuid.uuid4(), now=datetime.now(UTC))
 

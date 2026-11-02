@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import statistics
 import sys
 import time
@@ -284,6 +285,75 @@ class ContextBundleBuildLatencyTests(unittest.TestCase):
 
 
 class ContextBundleSafeWrapTests(unittest.TestCase):
+    def test_ueba_request_uses_configured_url_and_service_token(self) -> None:
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        class _Response:
+            headers = {"content-type": "application/json"}
+
+            @staticmethod
+            def raise_for_status() -> None:
+                return None
+
+            @staticmethod
+            def json() -> list[dict[str, Any]]:
+                return [
+                    {
+                        "entity_id": "alice",
+                        "peer_group_id": None,
+                        "window_days": 30,
+                        "baseline_features": {"logins": 4},
+                        "deviation_score": 0.25,
+                        "notes": "live baseline",
+                    }
+                ]
+
+        class _Client:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+            async def __aenter__(self) -> _Client:
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                return None
+
+            async def get(self, url: str, **kwargs: Any) -> _Response:
+                calls.append((url, kwargs))
+                return _Response()
+
+        async def _go() -> dict[str, Any]:
+            builder = ContextBundleBuilder(per_source_timeout=0.5)
+            return await builder._fetch_baselines(
+                "00000000-0000-0000-0000-000000000001",
+                [EntityRef(type="user", value="alice")],
+            )
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AISOC_UEBA_URL": "https://ueba.internal.example",
+                    "AISOC_SERVICE_TOKEN": "test-service-token",
+                },
+            ),
+            patch("httpx.AsyncClient", _Client),
+        ):
+            baselines = asyncio.run(_go())
+
+        self.assertIn("user:alice", baselines)
+        self.assertEqual(len(calls), 1)
+        url, kwargs = calls[0]
+        self.assertEqual(url, "https://ueba.internal.example/api/v1/ueba/baselines")
+        self.assertEqual(
+            kwargs["headers"],
+            {
+                "X-AiSOC-Tenant-ID": "00000000-0000-0000-0000-000000000001",
+                "Authorization": "Bearer test-service-token",
+            },
+        )
+        self.assertEqual(kwargs["params"]["tenant_id"], "00000000-0000-0000-0000-000000000001")
+
     def test_source_failure_records_error_does_not_raise(self) -> None:
         async def _go() -> ContextBundle:
             builder = ContextBundleBuilder(per_source_timeout=0.5)

@@ -12,6 +12,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
+from app.core.database import normalize_asyncpg_url
 from app.models.ueba import EntityBaseline, PeerGroup, UEBAAnomaly
 from app.security.service_auth import require_service_auth
 from app.security.tenant_scope import (
@@ -31,7 +32,8 @@ ScopedPrincipal = Annotated[TenantPrincipal, Depends(require_console_or_service_
 # ---------------------------------------------------------------------------
 # DB dependency
 # ---------------------------------------------------------------------------
-_engine = create_async_engine(settings.database_url)
+_database_url, _connect_args = normalize_asyncpg_url(settings.database_url)
+_engine = create_async_engine(_database_url, connect_args=_connect_args)
 _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
 

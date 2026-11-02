@@ -4,7 +4,8 @@ A serverless-first deployment of the AiSOC stack on Microsoft Azure, mirroring
 the [GCP skeleton](../gcp/README.md):
 
 - **Azure Container Apps** for the API, web console, ingest gateway,
-  connectors scheduler, governed actions, fusion, agents, and realtime services
+  connectors scheduler, governed actions, fusion, UEBA, agents, realtime, and
+  scheduled evidence-lifecycle jobs
 - **Azure Event Hubs Standard** as the private Kafka-compatible application
   event spine, authenticated only with a user-assigned managed identity
 - **Azure Database for PostgreSQL Flexible Server 16** for the application
@@ -14,6 +15,10 @@ the [GCP skeleton](../gcp/README.md):
 - **Azure Key Vault** for application secrets, service-to-service tokens, and
   service-specific TLS database URLs
 - **Azure Container Registry** as the registry CI pushes to
+- **ClickHouse and Neo4j** on one isolated Spot VM with Standard SSD for the
+  low-volume PoC's hot event search and entity relationship graph
+- **ADLS Gen2 Standard LRS** with private endpoints for Parquet evidence and
+  checksum/restore-verified ClickHouse backups
 - **Microsoft Foundry** with private networking, local authentication disabled,
   and an internal OpenAI-compatible gateway that obtains model tokens with the
   pipeline managed identity
@@ -43,10 +48,13 @@ infra/terraform/azure/
 ├── iam.tf                   ← shared runtime identity + role assignments
 ├── container_apps.tf        ← api / web / ingest Container Apps
 ├── event_hubs.tf            ← Standard Kafka endpoint, topics, private link
-├── ai_services.tf           ← fusion / agents / realtime Container Apps
+├── ai_services.tf           ← fusion / UEBA / agents / realtime Container Apps
 ├── ai_models.tf             ← private Foundry account, project, deployments,
 │                              private endpoint/DNS, inference RBAC
 ├── ai_gateway.tf            ← internal model gateway using pipeline UAMI
+├── clickhouse.tf            ← Spot VM, ClickHouse, Neo4j, ADLS Gen2, lifecycle
+├── lake_operations.tf       ← scheduled Parquet archive + backup/restore jobs
+├── monitoring.tf            ← Event Hubs and Spot VM operational alerts
 ├── connectors_identity.tf   ← connectors app + Sentinel Reader identity
 ├── actions_identity.tf      ← actions app + Sentinel Responder identity
 ├── ARCHITECTURE.md          ← deployed data flow, trust boundaries, storage
@@ -73,14 +81,15 @@ into modules when you start running multiple environments off the same code.
    ```bash
    for namespace in \
      Microsoft.App Microsoft.Authorization Microsoft.Cache \
-     Microsoft.ContainerRegistry Microsoft.DBforPostgreSQL Microsoft.EventHub \
+     Microsoft.CognitiveServices Microsoft.Compute Microsoft.ContainerRegistry \
+     Microsoft.DBforPostgreSQL Microsoft.EventHub Microsoft.Insights \
      Microsoft.KeyVault Microsoft.ManagedIdentity Microsoft.Network \
-     Microsoft.OperationalInsights Microsoft.SecurityInsights; do
+     Microsoft.OperationalInsights Microsoft.SecurityInsights Microsoft.Storage; do
      az provider register --namespace "$namespace" --wait
    done
    ```
-5. (Optional) **A storage account for remote state** — recommended for anything
-   beyond a personal sandbox; see *State backend* below.
+5. **The configured remote-state storage account.** This environment uses the
+   Azure Storage backend declared in `versions.tf` and Entra authentication.
 6. **An existing Log Analytics workspace with Microsoft Sentinel enabled** in
    the same Entra tenant. Set `sentinel_rg_name` and
    `sentinel_workspace_name`; set
@@ -123,19 +132,44 @@ not provide. In that optional mode, forward only the tables required by the
 specific use case; do not duplicate the entire workspace by default.
 
 The connector records the last source event it successfully submitted as
-`connectors.last_event_at`. The Operations Funnel uses that watermark for the
-Ingest health stage. `events_ingested` is a cumulative accepted-event counter;
-the two fields answer different questions and must both advance on a successful
-non-empty poll.
+`connectors.last_event_at`, while `events_ingested` is a cumulative accepted
+counter. Direct ingest and Event Hubs replay have no connector row, so the
+Operations Funnel first treats recent persisted alert flow as positive proof
+that the shared ingest path is alive, then falls back to connector freshness.
+Stale connectors still remain visible in the backlog and connector-health
+views.
 
 Event Hubs is the private application transport, not the analytical archive.
-The deployed test stack persists alerts, incidents, connector checkpoints, and
-investigation state in PostgreSQL. It does not deploy ClickHouse, so raw events
-are retained only for the Event Hubs retention window unless a lake is added.
-Every hub defaults to the Standard tier maximum of seven days, configurable
-from one through seven with `eventhub_message_retention_days`. Extending the
-window does not change throughput or consumer behavior, but retained volume
-beyond the tier's included allowance can add storage charges.
+The deployed test stack persists application state in PostgreSQL, raw event
+projections in ClickHouse, entity relationships in Neo4j, and lifecycle copies
+in ADLS Gen2. Every hub uses the Standard tier maximum of seven days,
+configurable from one through seven with `eventhub_message_retention_days`.
+Extending the transport window does not change throughput or consumer
+behavior, but retained volume beyond the tier's included allowance can add
+storage charges.
+
+## ClickHouse, Neo4j, and five-year evidence lifecycle
+
+The PoC deliberately uses one small, evictable compute node rather than a
+premium managed cluster:
+
+- a `Standard_E2as_v5` Spot VM in an isolated, peered VNet;
+- Standard SSD LRS for both the OS and the 512 GiB data disk;
+- ClickHouse for 365-day hot search (with a 400-day TTL safety ceiling);
+- Neo4j Community for entity and relationship pivots; and
+- ADLS Gen2 Standard LRS with hierarchical namespace, private endpoints,
+  public access disabled, and shared-key access disabled.
+
+The daily archive job exports age-qualified ClickHouse rows as Parquet. ADLS
+keeps the export cool/cold for its first year, archives it for the next three,
+and deletes it after four years in ADLS. Combined with the first year in
+ClickHouse, this is the requested five-year lifecycle. The weekly backup job
+uploads a snapshot, downloads it again, verifies its SHA-256 digest, restores
+it into a temporary ClickHouse table, and compares row counts.
+
+This is a cost-oriented PoC floor, not a high-availability architecture. A Spot
+eviction can interrupt search until the VM returns or a restore is performed;
+ADLS and the verified backup job are the recovery boundary.
 
 ## AI model plane
 
@@ -157,28 +191,25 @@ The Key Vault-backed `LITELLM_MASTER_KEY` authenticates internal clients to the
 gateway. It is not a model-provider credential. The gateway itself obtains its
 Foundry access token through managed identity.
 
+## UEBA, continuous hunts, and response policy
+
+Sentinel Entity Analytics is enabled for Azure Active Directory, native
+Anomalies is enabled, and UEBA is active for sign-in, audit, managed identity,
+device logon, SecurityEvent, and AzureActivity sources. AiSOC's UEBA service
+also consumes `aisoc.raw_events` from its dedicated Event Hubs consumer group
+using the pipeline identity.
+
+The agents service vendors and schedules 68 hunt definitions for the PoC
+tenant and reads the ClickHouse event lake on each cycle. The actions service
+runs with `AISOC_MATURITY_TIER=L1`: policy evaluation is enabled, but
+destructive or high-impact response remains human-approval gated.
+
 ## State backend
 
-Terraform state is **not configured** by default so you can pick what fits.
-For anything shared across operators, use an Azure Storage backend:
-
-1. Create the state container once (outside Terraform):
-   ```bash
-   az group create -n aisoc-tfstate -l eastus
-   az storage account create -g aisoc-tfstate -n aisoctfstate$RANDOM \
-     --sku Standard_LRS --encryption-services blob
-   az storage container create -n tfstate --account-name <account-name>
-   ```
-2. Add a `backend "azurerm"` block to `versions.tf`:
-   ```hcl
-   backend "azurerm" {
-     resource_group_name  = "aisoc-tfstate"
-     storage_account_name = "<account-name>"
-     container_name       = "tfstate"
-     key                  = "azure.tfstate"
-   }
-   ```
-3. Re-run `terraform init -migrate-state`.
+This environment uses the Entra-authenticated Azure Storage backend declared
+in `versions.tf`. Run `terraform init -reconfigure` after changing backend
+coordinates. Do not commit a local state file or pass storage account keys; the
+backend and the deployed data plane both use Azure identity.
 
 ## Container images
 
@@ -238,9 +269,11 @@ extensions required by the schema.
 
 ## Costs
 
-Defaults favor a small deployment, but Azure Managed Redis and an always-on
-connector/actions pair still incur cost. Check the Azure calculator for the
-selected region and current pricing. For a cost-sensitive sandbox, set
+Defaults favor a small deployment, but Azure Managed Redis, always-on pipeline
+replicas, retained Event Hubs data, the Standard SSD, and ADLS capacity still
+incur cost. The ClickHouse/Neo4j host is Spot and can be evicted. Check the
+Azure calculator for the selected region and current pricing. For a
+cost-sensitive sandbox, set
 `postgres_sku = "B_Standard_B1ms"`, `managed_redis_sku = "Balanced_B0"`, and
 `managed_redis_high_availability_enabled = false` in `terraform.tfvars`.
 
@@ -248,15 +281,15 @@ selected region and current pricing. For a cost-sensitive sandbox, set
 
 Known gaps:
 
-- **Threat intelligence and UEBA are not deployed.** The core path keeps these
-  integrations disabled until their dedicated services are added.
+- **External attribution and bulk IOC enrichment endpoints are not configured.**
+  Native Sentinel UEBA/anomalies and the AiSOC UEBA consumer are active, but
+  optional third-party enrichment calls fail open and log the missing service.
 - **Managed Redis is TLS-only.** The API uses a Key Vault-backed `rediss://`
   URL and the other workloads use the database-reported encrypted port
   (currently `10000`).
-- **Optional graph and lake services are not deployed.** API readiness covers
-  PostgreSQL and Redis and remains healthy; Neo4j graph and lake features stay
-  disabled until their dedicated workloads are added. Event Hubs provides
-  seven-day transport retention but is not a replacement for the raw-event lake.
+- **The graph and lake are single-node PoC services.** ClickHouse and Neo4j
+  share one Spot VM and one Standard SSD. Backups are restore-verified in ADLS,
+  but search and graph queries are unavailable during eviction or restoration.
 - **Claude Sonnet 5.5 is awaiting subscription allowlisting.** The deployment,
   routing, attestation inputs, and managed-identity path are present, but the
   test subscription cannot create the Marketplace deployment until Microsoft

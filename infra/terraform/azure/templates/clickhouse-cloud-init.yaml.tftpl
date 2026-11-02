@@ -1,0 +1,33 @@
+#cloud-config
+package_update: true
+packages:
+  - docker.io
+  - e2fsprogs
+
+write_files:
+  - path: /opt/aisoc/clickhouse/001_init.sql.b64
+    permissions: "0600"
+    owner: root:root
+    content: ${init_sql_b64}
+  - path: /opt/aisoc/clickhouse/password
+    permissions: "0600"
+    owner: root:root
+    content: ${clickhouse_password}
+  - path: /opt/aisoc/neo4j/password
+    permissions: "0600"
+    owner: root:root
+    content: ${neo4j_password}
+
+runcmd:
+  - [bash, -lc, 'set -euo pipefail; for n in $(seq 1 180); do test -b /dev/disk/azure/scsi1/lun0 && exit 0; sleep 5; done; echo "ClickHouse data disk did not attach" >&2; exit 1']
+  - [bash, -lc, 'set -euo pipefail; dev=/dev/disk/azure/scsi1/lun0; if ! blkid "$dev" >/dev/null 2>&1; then mkfs.ext4 -F -L aisoc-clickhouse "$dev"; fi; mkdir -p /var/lib/aisoc-data; uuid=$(blkid -s UUID -o value "$dev"); grep -q "$uuid" /etc/fstab || echo "UUID=$uuid /var/lib/aisoc-data ext4 defaults,nofail 0 2" >> /etc/fstab; mountpoint -q /var/lib/aisoc-data || mount /var/lib/aisoc-data; mkdir -p /var/lib/aisoc-data/clickhouse /var/lib/aisoc-data/neo4j/data /var/lib/aisoc-data/neo4j/logs; chown -R 101:101 /var/lib/aisoc-data/clickhouse; chown -R 7474:7474 /var/lib/aisoc-data/neo4j']
+  - [bash, -lc, 'base64 -d /opt/aisoc/clickhouse/001_init.sql.b64 > /opt/aisoc/clickhouse/001_init.sql; chmod 0400 /opt/aisoc/clickhouse/001_init.sql; rm -f /opt/aisoc/clickhouse/001_init.sql.b64']
+  - [systemctl, enable, --now, docker]
+  - [bash, -lc, 'docker rm -f aisoc-clickhouse >/dev/null 2>&1 || true']
+  - [bash, -lc, 'set -euo pipefail; password=$(cat /opt/aisoc/clickhouse/password); docker run -d --name aisoc-clickhouse --restart unless-stopped --network host --memory 7g -e CLICKHOUSE_DB=aisoc -e CLICKHOUSE_USER=aisoc -e CLICKHOUSE_PASSWORD="$password" -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 -v /var/lib/aisoc-data/clickhouse:/var/lib/clickhouse -v /opt/aisoc/clickhouse/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro ${clickhouse_image}']
+  - [bash, -lc, 'set -euo pipefail; password=$(cat /opt/aisoc/clickhouse/password); for n in $(seq 1 120); do docker exec aisoc-clickhouse clickhouse-client --user aisoc --password "$password" --query "SELECT 1" >/dev/null 2>&1 && exit 0; sleep 5; done; docker logs --tail=100 aisoc-clickhouse >&2; exit 1']
+  - [bash, -lc, 'docker rm -f aisoc-neo4j >/dev/null 2>&1 || true']
+  - [bash, -lc, 'set -euo pipefail; password=$(cat /opt/aisoc/neo4j/password); docker run -d --name aisoc-neo4j --restart unless-stopped --network host --memory 4g -e NEO4J_AUTH="neo4j/$password" -e NEO4J_server_memory_heap_initial__size=512m -e NEO4J_server_memory_heap_max__size=1g -e NEO4J_server_memory_pagecache_size=1g -e NEO4J_server_default__listen__address=0.0.0.0 -v /var/lib/aisoc-data/neo4j/data:/data -v /var/lib/aisoc-data/neo4j/logs:/logs ${neo4j_image}']
+  - [bash, -lc, 'set -euo pipefail; password=$(cat /opt/aisoc/neo4j/password); for n in $(seq 1 120); do docker exec aisoc-neo4j cypher-shell -u neo4j -p "$password" "RETURN 1" >/dev/null 2>&1 && exit 0; sleep 5; done; docker logs --tail=100 aisoc-neo4j >&2; exit 1']
+
+final_message: "AiSOC ClickHouse and Neo4j Spot PoC bootstrap complete"

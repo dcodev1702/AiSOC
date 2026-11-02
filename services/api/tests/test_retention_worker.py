@@ -130,6 +130,11 @@ def lake_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any
         return FakeResult([])
 
     monkeypatch.setattr(retention_purge, "execute_lake_query", fake_execute)
+
+    async def verified(_db: Any, tenant_id: uuid.UUID, _days: int) -> list[str]:
+        return ["2025-01-01"]
+
+    monkeypatch.setattr(retention_purge, "_verified_archive_dates", verified)
     return calls
 
 
@@ -144,6 +149,19 @@ class TestItActuallyDeletes:
 
         assert any("ALTER TABLE aisoc.raw_events DELETE" in sql for sql, _ in lake_calls)
         assert db.deletes(), "no DELETE was issued against alerts"
+
+    async def test_live_run_refuses_an_unarchived_partition(
+        self, monkeypatch: pytest.MonkeyPatch, lake_calls: list[Any]
+    ) -> None:
+        async def missing(_db: Any, _tenant_id: uuid.UUID, _days: int) -> list[str]:
+            raise retention_purge.ArchiveVerificationError("archive missing")
+
+        monkeypatch.setattr(retention_purge, "_verified_archive_dates", missing)
+        db = FakeSession([_policy(TENANT_A)], {str(TENANT_A): 0})
+        run = await run_once(db=db, dry_run=False)
+
+        assert not any("ALTER TABLE" in sql for sql, _ in lake_calls)
+        assert run.errors == ["lake: ArchiveVerificationError"]
 
     async def test_dry_run_counts_but_deletes_nothing(self, lake_calls: list[Any]) -> None:
         db = FakeSession([_policy(TENANT_A)], {str(TENANT_A): 4})
@@ -199,8 +217,8 @@ class TestTenantScoping:
 
         for_a = [s for s, _ in lake_calls if str(TENANT_A) in s]
         for_b = [s for s, _ in lake_calls if str(TENANT_B) in s]
-        assert all("INTERVAL 7 DAY" in s for s in for_a), for_a
-        assert all("INTERVAL 400 DAY" in s for s in for_b), for_b
+        assert all("INTERVAL 7 DAY" in s for s in for_a if s.startswith("SELECT count()")), for_a
+        assert all("INTERVAL 400 DAY" in s for s in for_b if s.startswith("SELECT count()")), for_b
 
     async def test_tenants_without_a_policy_are_untouched(self, lake_calls: list[Any]) -> None:
         """Defaults pre-fill a form; they are not an instruction to delete."""
@@ -263,6 +281,13 @@ class TestResilience:
             return FakeResult([(2,)]) if "count()" in sql else FakeResult([])
 
         monkeypatch.setattr(retention_purge, "execute_lake_query", selective)
+
+        async def verified(_db: Any, tenant_id: uuid.UUID, _days: int) -> list[str]:
+            if tenant_id == TENANT_A:
+                raise RuntimeError("shard down")
+            return ["2025-01-01"]
+
+        monkeypatch.setattr(retention_purge, "_verified_archive_dates", verified)
         db = FakeSession([_policy(TENANT_A), _policy(TENANT_B)], {})
         run = await run_once(db=db, dry_run=False)
 

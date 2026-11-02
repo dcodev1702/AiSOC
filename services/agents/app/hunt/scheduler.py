@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -296,7 +297,13 @@ _INSTANCE: HuntScheduler | None = None
 def get_scheduler() -> HuntScheduler:
     global _INSTANCE
     if _INSTANCE is None:
-        _INSTANCE = HuntScheduler()
+        tenant_ref = os.environ.get("AISOC_DEFAULT_TENANT_ID", "").strip()
+        try:
+            uuid.UUID(tenant_ref)
+        except (ValueError, AttributeError):
+            logger.warning("hunt.scheduler.invalid_tenant", tenant_ref=tenant_ref or "unset")
+            tenant_ref = ""
+        _INSTANCE = HuntScheduler(tenant_ref=tenant_ref)
     return _INSTANCE
 
 
