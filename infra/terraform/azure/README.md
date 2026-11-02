@@ -132,6 +132,10 @@ Event Hubs is the private application transport, not the analytical archive.
 The deployed test stack persists alerts, incidents, connector checkpoints, and
 investigation state in PostgreSQL. It does not deploy ClickHouse, so raw events
 are retained only for the Event Hubs retention window unless a lake is added.
+Every hub defaults to the Standard tier maximum of seven days, configurable
+from one through seven with `eventhub_message_retention_days`. Extending the
+window does not change throughput or consumer behavior, but retained volume
+beyond the tier's included allowance can add storage charges.
 
 ## AI model plane
 
@@ -252,7 +256,7 @@ Known gaps:
 - **Optional graph and lake services are not deployed.** API readiness covers
   PostgreSQL and Redis and remains healthy; Neo4j graph and lake features stay
   disabled until their dedicated workloads are added. Event Hubs provides
-  one-day transport retention but is not a replacement for the raw-event lake.
+  seven-day transport retention but is not a replacement for the raw-event lake.
 - **Claude Sonnet 5.5 is awaiting subscription allowlisting.** The deployment,
   routing, attestation inputs, and managed-identity path are present, but the
   test subscription cannot create the Marketplace deployment until Microsoft

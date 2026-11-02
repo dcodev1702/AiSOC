@@ -121,7 +121,7 @@ compromise must not gain incident-management authority.
    freshest accepted source time in `last_event_at`. The Operations Funnel uses
    the latter to decide whether Ingest is fresh.
 
-Event Hubs is a one-day transport buffer in this test stack. A raw-event
+Event Hubs is a seven-day transport buffer in this test stack. A raw-event
 ClickHouse lake is not deployed, so Event Hubs should not be treated as the
 long-term evidence archive. Sentinel/Log Analytics retains the original Azure
 security evidence, while PostgreSQL retains AiSOC alerts, incidents, connector

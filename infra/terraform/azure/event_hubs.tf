@@ -40,7 +40,7 @@ resource "azurerm_eventhub" "topic" {
   name              = each.value
   namespace_id      = azurerm_eventhub_namespace.main.id
   partition_count   = 2
-  message_retention = 1
+  message_retention = var.eventhub_message_retention_days
 }
 
 resource "azurerm_eventhub_consumer_group" "app" {

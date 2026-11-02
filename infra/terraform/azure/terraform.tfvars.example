@@ -44,6 +44,13 @@ sentinel_workspace_name = "replace-with-sentinel-workspace-name"
 # managed_redis_sku                       = "Balanced_B0"
 # managed_redis_high_availability_enabled = true # false only for a test deployment
 
+# ─── Azure Event Hubs ────────────────────────────────────────────────────────
+
+# Standard supports 1-7 days. Seven days gives operators a practical replay
+# window; retained volume beyond the tier's included allowance can add storage
+# charges. This applies uniformly to every AiSOC Event Hub.
+# eventhub_message_retention_days = 7
+
 # ─── Container Apps images ───────────────────────────────────────────────────
 #
 # Defaults point at the public GHCR demo images so the skeleton runs with zero

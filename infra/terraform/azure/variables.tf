@@ -124,6 +124,19 @@ variable "managed_redis_high_availability_enabled" {
   default     = true
 }
 
+# ─── Azure Event Hubs ────────────────────────────────────────────────────────
+
+variable "eventhub_message_retention_days" {
+  description = "Replay retention for every Event Hub in the Standard namespace. Azure Standard supports 1-7 days; retained volume beyond the included allowance can incur storage charges."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.eventhub_message_retention_days >= 1 && var.eventhub_message_retention_days <= 7
+    error_message = "eventhub_message_retention_days must be between 1 and 7 for an Azure Event Hubs Standard namespace."
+  }
+}
+
 # ─── Container Apps ──────────────────────────────────────────────────────────
 
 variable "api_image" {
