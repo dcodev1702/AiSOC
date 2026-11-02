@@ -14,10 +14,14 @@ the [GCP skeleton](../gcp/README.md):
 - **Azure Key Vault** for application secrets, service-to-service tokens, and
   service-specific TLS database URLs
 - **Azure Container Registry** as the registry CI pushes to
+- **Microsoft Foundry** with private networking, local authentication disabled,
+  and an internal OpenAI-compatible gateway that obtains model tokens with the
+  pipeline managed identity
 - **Four user-assigned managed identities** aligned to trust boundaries: a
-  shared API/web runtime, an ingest/fusion/agents/realtime pipeline identity,
-  a read-only Sentinel connector, and a Sentinel writeback identity — no
-  Event Hubs connection strings, registry passwords, or client secrets
+  shared API/web runtime, an ingest/fusion/agents/realtime/model-gateway
+  pipeline identity, a read-only Sentinel connector, and a Sentinel writeback
+  identity — no Event Hubs connection strings, registry passwords, provider
+  API keys, or application client secrets
 
 Sentinel remains the system of record. The connector polls the existing
 Sentinel incident API and sends those normalized records through ingest. Event
@@ -40,8 +44,12 @@ infra/terraform/azure/
 ├── container_apps.tf        ← api / web / ingest Container Apps
 ├── event_hubs.tf            ← Standard Kafka endpoint, topics, private link
 ├── ai_services.tf           ← fusion / agents / realtime Container Apps
+├── ai_models.tf             ← private Foundry account, project, deployments,
+│                              private endpoint/DNS, inference RBAC
+├── ai_gateway.tf            ← internal model gateway using pipeline UAMI
 ├── connectors_identity.tf   ← connectors app + Sentinel Reader identity
 ├── actions_identity.tf      ← actions app + Sentinel Responder identity
+├── ARCHITECTURE.md          ← deployed data flow, trust boundaries, storage
 ├── outputs.tf               ← URLs, connection targets, identity + vault IDs
 └── terraform.tfvars.example ← copy → terraform.tfvars and override
 ```
@@ -114,6 +122,37 @@ you later need raw, near-real-time table streaming that the incident poll does
 not provide. In that optional mode, forward only the tables required by the
 specific use case; do not duplicate the entire workspace by default.
 
+The connector records the last source event it successfully submitted as
+`connectors.last_event_at`. The Operations Funnel uses that watermark for the
+Ingest health stage. `events_ingested` is a cumulative accepted-event counter;
+the two fields answer different questions and must both advance on a successful
+non-empty poll.
+
+Event Hubs is the private application transport, not the analytical archive.
+The deployed test stack persists alerts, incidents, connector checkpoints, and
+investigation state in PostgreSQL. It does not deploy ClickHouse, so raw events
+are retained only for the Event Hubs retention window unless a lake is added.
+
+## AI model plane
+
+The API and agents call an internal model gateway. The gateway is assigned the
+pipeline user-managed identity and receives `Cognitive Services User` on the
+private Foundry account. Foundry local authentication and public network access
+are disabled, so upstream inference uses Entra tokens rather than provider API
+keys.
+
+`gpt-5-6-terra` is deployed and is the active fast and deep model in this test
+subscription. `claude-sonnet-5-5` is fully codified but disabled by default.
+Both Azure-hosted and publisher-hosted deployment attempts returned
+`MarketplaceSubscriptionCannotBeCompleted`, which is a subscription-level
+Marketplace allowlist condition. After Microsoft enables the offer, set the
+accurate attestation variables and `enable_claude_sonnet = true`; the deep
+aliases then switch to Claude without changing callers.
+
+The Key Vault-backed `LITELLM_MASTER_KEY` authenticates internal clients to the
+gateway. It is not a model-provider credential. The gateway itself obtains its
+Foundry access token through managed identity.
+
 ## State backend
 
 Terraform state is **not configured** by default so you can pick what fits.
@@ -150,7 +189,8 @@ az acr login --name "${ACR%%.*}"
 
 docker build -t $ACR/api:$(git rev-parse --short HEAD)    services/api
 docker push     $ACR/api:$(git rev-parse --short HEAD)
-# repeat for web, ingest, connectors, actions, fusion, agents, and realtime
+# repeat for web, ingest, connectors, actions, fusion, agents, realtime,
+# and the model gateway
 
 terraform apply \
   -var "api_image=$ACR/api:<sha>" \
@@ -161,10 +201,13 @@ terraform apply \
 ```
 
 The four managed identities already hold `AcrPull`, so no registry admin user
-or password is needed. The shared runtime and pipeline identities are lean
-trust-boundary choices: the pipeline identity alone has Event Hubs Data Sender
-and Data Receiver. The connector Reader and action Responder identities remain
-separate because their Sentinel permissions are materially different.
+or password is needed. Four identities is the lean trust-boundary result, not
+one identity per service: runtime covers API/web; pipeline covers the five
+event and model workloads; connectors remains read-only in Sentinel; actions
+keeps Sentinel writeback separate. The pipeline identity alone has Event Hubs
+Data Sender/Receiver and Foundry inference. The connector Reader and action
+Responder identities remain separate because their Sentinel permissions are
+materially different.
 
 ## Connecting to Postgres from your laptop
 
@@ -208,7 +251,12 @@ Known gaps:
   (currently `10000`).
 - **Optional graph and lake services are not deployed.** API readiness covers
   PostgreSQL and Redis and remains healthy; Neo4j graph and lake features stay
-  disabled until their dedicated workloads are added.
+  disabled until their dedicated workloads are added. Event Hubs provides
+  one-day transport retention but is not a replacement for the raw-event lake.
+- **Claude Sonnet 5.5 is awaiting subscription allowlisting.** The deployment,
+  routing, attestation inputs, and managed-identity path are present, but the
+  test subscription cannot create the Marketplace deployment until Microsoft
+  enables the offer. GPT-5.6-Terra remains the deep-model fallback meanwhile.
 - **No Azure Front Door / WAF.** Container Apps ingress gives every service a
   managed `*.azurecontainerapps.io` certificate, fine for the skeleton. Put
   Azure Front Door + WAF in front of the API for a custom domain and edge

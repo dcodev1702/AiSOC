@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from app.connectors.base import AcknowledgementResult, BaseConnector, ConnectorSchema
 from app.db.connector_repo import ConnectorInstance
-from app.scheduler import ConnectorScheduler, _coerce_poll_interval
+from app.scheduler import ConnectorScheduler, _coerce_poll_interval, _extract_last_event_at
 
 
 def _make_instance(
@@ -75,6 +75,27 @@ def test_poll_interval_invalid_falls_back():
 
 def test_poll_interval_passes_through_valid():
     assert _coerce_poll_interval({"poll_interval_seconds": 600}) == 600
+
+
+# ---------------------------------------------------------------------------
+# event freshness watermark
+# ---------------------------------------------------------------------------
+
+
+def test_extract_last_event_at_accepts_canonical_created_at():
+    assert _extract_last_event_at(
+        [{"created_at": "2026-11-02T02:20:25.659332Z"}]
+    ) == datetime(2026, 11, 2, 2, 20, 25, 659332, tzinfo=UTC)
+
+
+def test_extract_last_event_at_accepts_event_time_and_uses_freshest_value():
+    assert _extract_last_event_at(
+        [
+            {"timestamp": "2026-11-02T02:20:25Z"},
+            {"event_time": "2026-11-02T02:21:25Z"},
+            {"created_at": "2026-11-02T02:22:25Z"},
+        ]
+    ) == datetime(2026, 11, 2, 2, 22, 25, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------

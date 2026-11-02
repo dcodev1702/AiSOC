@@ -100,9 +100,9 @@ resource "azurerm_container_app" "connectors" {
   }
 
   template {
-    # One replica is a correctness constraint until the connector scheduler
-    # has leader election. Two replicas each poll every connector; dedupe is
-    # best-effort downstream.
+    # Keep one steady-state replica for this test deployment. The database
+    # lease still protects rolling revisions from polling the same source at
+    # the same time.
     min_replicas = 1
     max_replicas = 1
 

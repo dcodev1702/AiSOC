@@ -92,6 +92,33 @@ output "realtime_url" {
   value       = local.internal_realtime_url
 }
 
+# ─── Managed-identity model plane ────────────────────────────────────────────
+
+output "model_gateway_url" {
+  description = "Internal OpenAI-compatible gateway URL used by the API and agents."
+  value       = local.internal_model_gateway_url
+}
+
+output "foundry_account_name" {
+  description = "Private Microsoft Foundry account hosting the model deployments."
+  value       = local.foundry_account_name
+}
+
+output "foundry_project_name" {
+  description = "Microsoft Foundry project associated with the AiSOC deployment."
+  value       = local.foundry_project_name
+}
+
+output "gpt_terra_deployment_name" {
+  description = "Active GPT-5.6-Terra deployment consumed through managed identity."
+  value       = azapi_resource.gpt_terra.name
+}
+
+output "claude_sonnet_deployment_name" {
+  description = "Claude Sonnet 5.5 deployment name, or null until the subscription is Marketplace-allowlisted and the deployment is enabled."
+  value       = local.claude_sonnet_enabled ? azapi_resource.claude_sonnet[0].name : null
+}
+
 # ─── Key Vault ───────────────────────────────────────────────────────────────
 
 output "key_vault_name" {

@@ -522,6 +522,11 @@ class MicrosoftSentinelConnector(BaseConnector):
 
     def normalize(self, raw: dict[str, Any]) -> dict[str, Any]:
         props = raw.get("properties", {})
+        # ``lastModifiedTimeUtc`` is the Sentinel collection cursor and is
+        # therefore the best freshness watermark for an incident update.
+        # Keep ``created_at`` as the original incident occurrence time for
+        # OCSF/event-time consumers.
+        timestamp = props.get("lastModifiedTimeUtc") or props.get("createdTimeUtc")
         severity_map = {
             "Informational": "info",
             "Low": "low",
@@ -540,6 +545,7 @@ class MicrosoftSentinelConnector(BaseConnector):
             "tactics": props.get("additionalData", {}).get("tactics", []),
             "alert_count": props.get("additionalData", {}).get("alertsCount", 0),
             "raw_event": props,
+            "timestamp": timestamp,
             "created_at": props.get("createdTimeUtc"),
         }
 

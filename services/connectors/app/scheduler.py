@@ -833,8 +833,8 @@ class ConnectorScheduler:
         # freshness-SLO badge in the UI reflects the freshest event we
         # actually shipped to the lake (not the poll wall-clock, which can
         # be misleading for low-volume connectors). We look at the standard
-        # ECS-ish ``@timestamp`` first and fall back to ``timestamp``; if
-        # neither is present or parseable we leave ``last_event_at`` as
+        # ECS-ish ``@timestamp`` first and then the other canonical event
+        # time fields; if none is present or parseable we leave ``last_event_at`` as
         # None and ``record_poll_success`` won't touch the column.
         last_event_at = _extract_last_event_at(kept) if accepted > 0 else None
         last_event_kind = target.connector_type if accepted > 0 else None
@@ -1278,9 +1278,10 @@ def _extract_last_event_at(events: list[dict[str, Any]]) -> datetime | None:
     """Return the freshest event timestamp from a normalized batch.
 
     Workstream 5: powers the freshness-SLO badge in the UI. We prefer
-    the ECS-ish ``@timestamp`` field, fall back to ``timestamp``, and
-    accept either ISO-8601 strings (with ``Z`` or offset) or epoch
-    seconds. A batch with no parseable timestamps yields ``None`` so
+    the ECS-ish ``@timestamp`` field, then fall back through the canonical
+    ``timestamp``, ``event_time``, and ``created_at`` fields. Values may be
+    ISO-8601 strings (with ``Z`` or offset), datetimes, or epoch seconds.
+    A batch with no parseable timestamps yields ``None`` so
     ``record_poll_success`` won't overwrite a previously-good value.
     """
     if not events:
@@ -1289,22 +1290,25 @@ def _extract_last_event_at(events: list[dict[str, Any]]) -> datetime | None:
     for event in events:
         if not isinstance(event, dict):
             continue
-        raw = event.get("@timestamp") or event.get("timestamp")
         parsed: datetime | None = None
-        if isinstance(raw, datetime):
-            parsed = raw
-        elif isinstance(raw, str):
-            try:
-                # ``fromisoformat`` rejects trailing ``Z`` until 3.11+;
-                # normalize to ``+00:00`` so we work on 3.10+.
-                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            except ValueError:
-                parsed = None
-        elif isinstance(raw, int | float):
-            try:
-                parsed = datetime.fromtimestamp(float(raw), tz=UTC)
-            except (OverflowError, OSError, ValueError):
-                parsed = None
+        for field in ("@timestamp", "timestamp", "event_time", "created_at"):
+            raw = event.get(field)
+            if isinstance(raw, datetime):
+                parsed = raw
+            elif isinstance(raw, str):
+                try:
+                    # ``fromisoformat`` rejects trailing ``Z`` until 3.11+;
+                    # normalize to ``+00:00`` so we work on 3.10+.
+                    parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except ValueError:
+                    parsed = None
+            elif isinstance(raw, int | float):
+                try:
+                    parsed = datetime.fromtimestamp(float(raw), tz=UTC)
+                except (OverflowError, OSError, ValueError):
+                    parsed = None
+            if parsed is not None:
+                break
         if parsed is None:
             continue
         if parsed.tzinfo is None:

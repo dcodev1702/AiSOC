@@ -59,6 +59,11 @@ resource "random_password" "realtime_internal_token" {
   special = false
 }
 
+resource "random_password" "litellm_master_key" {
+  length  = 48
+  special = false
+}
+
 resource "random_password" "postgres_app" {
   length  = 32
   special = true
@@ -140,6 +145,17 @@ resource "azurerm_key_vault_secret" "credential_key" {
 resource "azurerm_key_vault_secret" "realtime_jwt_secret" {
   name         = "realtime-jwt-secret"
   value        = random_password.realtime_jwt_secret.result
+  key_vault_id = azurerm_key_vault.main.id
+  tags         = var.tags
+
+  depends_on = [azurerm_role_assignment.deployer_secrets_officer]
+}
+
+# This authenticates AiSOC services to the private model gateway. It is not a
+# model-provider credential: the gateway calls Foundry with the pipeline UAMI.
+resource "azurerm_key_vault_secret" "litellm_master_key" {
+  name         = "litellm-master-key"
+  value        = "sk-${random_password.litellm_master_key.result}"
   key_vault_id = azurerm_key_vault.main.id
   tags         = var.tags
 

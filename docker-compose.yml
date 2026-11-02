@@ -954,6 +954,8 @@ services:
       # and clear AISOC_LLM_API_BASE — to route to a hosted provider instead.
       AISOC_LLM_MODEL_FAST: ${AISOC_LLM_MODEL_FAST:-ollama_chat/llama3.2:3b-instruct-q4_K_M}
       AISOC_LLM_MODEL_DEEP: ${AISOC_LLM_MODEL_DEEP:-ollama_chat/llama3.2:3b-instruct-q4_K_M}
+      AISOC_LLM_BASE_MODEL_FAST: ${AISOC_LLM_BASE_MODEL_FAST:-ollama_chat/llama3.2:3b-instruct-q4_K_M}
+      AISOC_LLM_BASE_MODEL_DEEP: ${AISOC_LLM_BASE_MODEL_DEEP:-ollama_chat/llama3.2:3b-instruct-q4_K_M}
       # `-` and not `:-`, deliberately: an operator moving to a hosted provider
       # sets AISOC_LLM_API_BASE= (empty) in .env, and `:-` would helpfully undo
       # that by substituting the Ollama address back in.

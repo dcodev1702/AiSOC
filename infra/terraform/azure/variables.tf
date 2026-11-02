@@ -174,6 +174,12 @@ variable "realtime_image" {
   default     = "ghcr.io/beenuar/aisoc-realtime:latest"
 }
 
+variable "model_gateway_image" {
+  description = "Container image for the internal LiteLLM model gateway. Pin a tested ACR digest for deployments."
+  type        = string
+  default     = "ghcr.io/berriai/litellm:v1.102.1"
+}
+
 variable "sentinel_subscription_id" {
   description = "Subscription containing the existing Sentinel workspace. Empty uses the authenticated Azure subscription."
   type        = string
@@ -227,4 +233,69 @@ variable "openai_api_key" {
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "ai_location" {
+  description = "Azure region for Microsoft Foundry and model deployments. Sweden Central currently supports both requested models."
+  type        = string
+  default     = "swedencentral"
+}
+
+variable "gpt_terra_capacity" {
+  description = "Global Standard capacity in thousands of tokens per minute for GPT-5.6-Terra."
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.gpt_terra_capacity >= 1
+    error_message = "gpt_terra_capacity must be at least 1."
+  }
+}
+
+variable "enable_claude_sonnet" {
+  description = "Deploy Claude Sonnet 5.5 after Microsoft has allowlisted the subscription for the Anthropic offer."
+  type        = bool
+  default     = false
+}
+
+variable "claude_sonnet_capacity" {
+  description = "Global Standard capacity in thousands of tokens per minute for Claude Sonnet 5.5."
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.claude_sonnet_capacity >= 1
+    error_message = "claude_sonnet_capacity must be at least 1."
+  }
+}
+
+variable "claude_organization_name" {
+  description = "Legal entity name used for Anthropic Azure Marketplace attestation. Empty defers the Claude deployment."
+  type        = string
+  default     = ""
+}
+
+variable "claude_country_code" {
+  description = "Two-letter ISO country code used for Anthropic Azure Marketplace attestation."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.claude_country_code == "" || can(regex("^[A-Z]{2}$", var.claude_country_code))
+    error_message = "claude_country_code must be empty or a two-letter uppercase ISO country code."
+  }
+}
+
+variable "claude_industry" {
+  description = "Industry used for Anthropic Azure Marketplace attestation."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = var.claude_industry == "" || contains([
+      "technology", "finance", "healthcare", "education", "retail",
+      "manufacturing", "government", "media", "other",
+    ], var.claude_industry)
+    error_message = "claude_industry must be empty or a supported lowercase Marketplace value."
+  }
 }

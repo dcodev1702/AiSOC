@@ -1,13 +1,14 @@
 /** Always-on AI processing path: fusion -> agents -> realtime. */
 
 locals {
-  kafka_bootstrap_server = "${azurerm_eventhub_namespace.main.name}.servicebus.windows.net:9093"
-  kafka_oauth_resource   = "https://${azurerm_eventhub_namespace.main.name}.servicebus.windows.net"
-  internal_api_url       = "https://${var.name_prefix}-api.internal.${azurerm_container_app_environment.main.default_domain}"
-  internal_fusion_url    = "https://${var.name_prefix}-fusion.internal.${azurerm_container_app_environment.main.default_domain}"
-  internal_agents_url    = "https://${var.name_prefix}-agents.internal.${azurerm_container_app_environment.main.default_domain}"
-  internal_realtime_url  = "https://${var.name_prefix}-realtime.internal.${azurerm_container_app_environment.main.default_domain}"
-  web_origin             = "https://${var.name_prefix}-web.${azurerm_container_app_environment.main.default_domain}"
+  kafka_bootstrap_server     = "${azurerm_eventhub_namespace.main.name}.servicebus.windows.net:9093"
+  kafka_oauth_resource       = "https://${azurerm_eventhub_namespace.main.name}.servicebus.windows.net"
+  internal_api_url           = "https://${var.name_prefix}-api.internal.${azurerm_container_app_environment.main.default_domain}"
+  internal_fusion_url        = "https://${var.name_prefix}-fusion.internal.${azurerm_container_app_environment.main.default_domain}"
+  internal_agents_url        = "https://${var.name_prefix}-agents.internal.${azurerm_container_app_environment.main.default_domain}"
+  internal_realtime_url      = "https://${var.name_prefix}-realtime.internal.${azurerm_container_app_environment.main.default_domain}"
+  internal_model_gateway_url = "https://${var.name_prefix}-model-gateway.internal.${azurerm_container_app_environment.main.default_domain}"
+  web_origin                 = "https://${var.name_prefix}-web.${azurerm_container_app_environment.main.default_domain}"
 }
 
 resource "azurerm_container_app" "fusion" {
@@ -161,6 +162,11 @@ resource "azurerm_container_app" "agents" {
     identity            = azurerm_user_assigned_identity.pipeline.id
     key_vault_secret_id = azurerm_key_vault_secret.service_token.versionless_id
   }
+  secret {
+    name                = "litellm-master-key"
+    identity            = azurerm_user_assigned_identity.pipeline.id
+    key_vault_secret_id = azurerm_key_vault_secret.litellm_master_key.versionless_id
+  }
 
   ingress {
     external_enabled = false
@@ -246,6 +252,10 @@ resource "azurerm_container_app" "agents" {
         value = local.internal_realtime_url
       }
       env {
+        name  = "LLM_GATEWAY_URL"
+        value = "${local.internal_model_gateway_url}/v1"
+      }
+      env {
         name        = "DATABASE_URL"
         secret_name = "database-url"
       }
@@ -269,6 +279,10 @@ resource "azurerm_container_app" "agents" {
         name        = "AISOC_API_SERVICE_TOKEN"
         secret_name = "service-token"
       }
+      env {
+        name        = "LITELLM_MASTER_KEY"
+        secret_name = "litellm-master-key"
+      }
     }
   }
 
@@ -277,6 +291,7 @@ resource "azurerm_container_app" "agents" {
     azurerm_role_assignment.kv_secrets_user,
     azurerm_role_assignment.eventhubs_receiver,
     azurerm_private_endpoint.eventhubs,
+    azurerm_container_app.model_gateway,
   ]
 }
 

@@ -54,6 +54,10 @@ sentinel_workspace_name = "replace-with-sentinel-workspace-name"
 # ingest_image = "ghcr.io/beenuar/aisoc-ingest:latest"
 # connectors_image = "ghcr.io/beenuar/aisoc-connectors:latest"
 # actions_image    = "ghcr.io/beenuar/aisoc-actions:latest"
+# fusion_image     = "ghcr.io/beenuar/aisoc-fusion:latest"
+# agents_image     = "ghcr.io/beenuar/aisoc-agents:latest"
+# realtime_image   = "ghcr.io/beenuar/aisoc-realtime:latest"
+# model_gateway_image = "your-registry.example/aisoc-model-gateway@sha256:<digest>"
 
 # ─── Container Apps scaling ──────────────────────────────────────────────────
 
@@ -66,11 +70,29 @@ sentinel_workspace_name = "replace-with-sentinel-workspace-name"
 
 # cors_origins = "https://app.example.com,https://demo.example.com"
 
-# ─── Optional: agents / OpenAI ───────────────────────────────────────────────
+# ─── Managed-identity AI model plane ─────────────────────────────────────────
 #
-# When set, an openai-api-key secret is provisioned in Key Vault and mounted
-# into the API container. Leave blank for the air-gapped (Ollama / LiteLLM)
-# configuration. Pass on the CLI to keep it off disk:
+# The model gateway uses the pipeline user-assigned identity to call the
+# private Foundry account. GPT-5.6-Terra is always deployed. Claude remains
+# disabled until Microsoft has allowlisted the subscription for that
+# Marketplace offer; once allowlisted, the attestation values below must be
+# legally accurate.
+
+# ai_location        = "swedencentral"
+# gpt_terra_capacity = 10
+
+# enable_claude_sonnet     = false
+# claude_sonnet_capacity   = 10
+# claude_organization_name = "replace-with-legal-entity-name"
+# claude_country_code      = "US"
+# claude_industry          = "technology"
+
+# ─── Optional direct-provider compatibility ──────────────────────────────────
+#
+# The Azure deployment does not require this key. Leave it blank to keep all
+# production model inference on the managed-identity gateway. It exists only
+# for deployments that deliberately retain a separate direct-provider path.
+# Pass it on the CLI to keep it off disk:
 #   terraform apply -var "openai_api_key=$OPENAI_API_KEY"
 
 # openai_api_key = ""

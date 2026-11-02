@@ -48,6 +48,27 @@ def test_deployment_identity_cannot_be_overridden(monkeypatch) -> None:
         )
 
 
+def test_normalize_exposes_standard_event_timestamp() -> None:
+    connector = _client(
+        tenant_id="tenant",
+        client_id="client",
+        client_secret="secret",
+    )
+
+    event = connector.normalize(
+        {
+            "name": "incident-id",
+            "properties": {
+                "createdTimeUtc": "2026-11-02T02:20:25.659332Z",
+                "lastModifiedTimeUtc": "2026-11-02T02:21:25.659332Z",
+            },
+        }
+    )
+
+    assert event["timestamp"] == "2026-11-02T02:21:25.659332Z"
+    assert event["created_at"] == "2026-11-02T02:20:25.659332Z"
+
+
 @pytest.mark.asyncio
 async def test_aks_uses_workload_identity_credential(monkeypatch) -> None:
     captured: dict[str, str] = {}

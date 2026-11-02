@@ -9,11 +9,11 @@
  *   - actions: governed Sentinel writeback
  *
  * Bindings:
- * Every identity gets AcrPull. All three read runtime secrets from Key Vault;
+ * Every identity gets AcrPull. All four read runtime secrets from Key Vault;
  * the Sentinel permissions remain exclusive to connectors and actions.
  * Sharing runtime trades per-process isolation for a smaller, test-friendly
  * RBAC surface. Split it again for production if web compromise must not grant
- * access to API/ingest secrets.
+ * access to API secrets.
  */
 
 # ─── User-assigned managed identities ────────────────────────────────────────

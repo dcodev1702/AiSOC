@@ -113,6 +113,11 @@ resource "azurerm_container_app" "api" {
     identity            = azurerm_user_assigned_identity.runtime.id
     key_vault_secret_id = azurerm_key_vault_secret.realtime_internal_token.versionless_id
   }
+  secret {
+    name                = "litellm-master-key"
+    identity            = azurerm_user_assigned_identity.runtime.id
+    key_vault_secret_id = azurerm_key_vault_secret.litellm_master_key.versionless_id
+  }
   dynamic "secret" {
     for_each = toset(var.openai_api_key == "" ? [] : ["openai"])
     content {
@@ -226,6 +231,10 @@ resource "azurerm_container_app" "api" {
         value = local.internal_realtime_url
       }
       env {
+        name  = "LLM_GATEWAY_URL"
+        value = "${local.internal_model_gateway_url}/v1"
+      }
+      env {
         name  = "AISOC_CONNECTORS_IDENTITY_NAME"
         value = azurerm_user_assigned_identity.connectors.name
       }
@@ -318,6 +327,10 @@ resource "azurerm_container_app" "api" {
       env {
         name        = "REALTIME_INTERNAL_TOKEN"
         secret_name = "realtime-internal-token"
+      }
+      env {
+        name        = "LITELLM_MASTER_KEY"
+        secret_name = "litellm-master-key"
       }
       dynamic "env" {
         for_each = toset(var.openai_api_key == "" ? [] : ["openai"])

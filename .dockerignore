@@ -38,6 +38,12 @@ terminals/
 
 # ─── Python (services/*) — excluded from the web build entirely ───────────────
 services/
+# The Azure model-gateway image is built from the repository root so it can
+# bake the canonical LiteLLM configuration. Re-include only that tiny service.
+!services/
+services/*
+!services/model-gateway/
+!services/model-gateway/**
 # …except the MCP server, which is a member of the root pnpm workspace and so
 # has to build from this context to get a `--frozen-lockfile` install against
 # the root `pnpm-lock.yaml`. Building it from `services/mcp/` would re-resolve
@@ -55,6 +61,11 @@ services/
 
 # ─── Other top-level monorepo dirs the web app does not need ──────────────────
 infra/
+# Same narrow exception for the one canonical gateway configuration.
+!infra/
+infra/*
+!infra/litellm/
+!infra/litellm/config.yaml
 detections/
 marketplace/
 plugins/

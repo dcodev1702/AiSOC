@@ -77,6 +77,20 @@ def test_prometheus_observability_is_wired():
     assert "prometheus" in callbacks, "prometheus callback missing — /metrics observability would be off"
 
 
+def test_azure_managed_identity_token_refresh_is_enabled():
+    """Hosted Azure backends must refresh Entra tokens instead of storing provider keys."""
+    settings = _load().get("litellm_settings", {})
+    assert settings.get("enable_azure_ad_token_refresh") is True
+
+
+def test_every_alias_declares_base_model_metadata_for_azure_accounting():
+    """Azure deployment aliases must identify the catalog model behind them."""
+    for entry in _load()["model_list"]:
+        model_ref = str(entry["litellm_params"]["model"])
+        expected = model_ref.replace("AISOC_LLM_MODEL_", "AISOC_LLM_BASE_MODEL_")
+        assert entry.get("model_info", {}).get("base_model") == expected
+
+
 def test_master_key_comes_from_env():
     cfg = _load()
     master_key = cfg.get("general_settings", {}).get("master_key", "")

@@ -51,6 +51,8 @@ model_list:
       model: os.environ/AISOC_LLM_MODEL_FAST
       api_base: os.environ/AISOC_LLM_API_BASE
       api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      base_model: os.environ/AISOC_LLM_BASE_MODEL_FAST
 
   # ── Recon / enrichment reasoning. ─────────────────────────────────────────────
   - model_name: aisoc-recon
@@ -58,6 +60,8 @@ model_list:
       model: os.environ/AISOC_LLM_MODEL_FAST
       api_base: os.environ/AISOC_LLM_API_BASE
       api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      base_model: os.environ/AISOC_LLM_BASE_MODEL_FAST
 
   # ── Deep investigation: the multi-step reasoning path — worth a stronger model.
   - model_name: aisoc-investigation
@@ -65,6 +69,8 @@ model_list:
       model: os.environ/AISOC_LLM_MODEL_DEEP
       api_base: os.environ/AISOC_LLM_API_BASE
       api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      base_model: os.environ/AISOC_LLM_BASE_MODEL_DEEP
 
   # ── Contextual copilot: interactive analyst Q&A. ──────────────────────────────
   - model_name: aisoc-copilot
@@ -72,6 +78,8 @@ model_list:
       model: os.environ/AISOC_LLM_MODEL_FAST
       api_base: os.environ/AISOC_LLM_API_BASE
       api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      base_model: os.environ/AISOC_LLM_BASE_MODEL_FAST
 
   # ── Summaries: alert/incident condensation. ───────────────────────────────────
   - model_name: aisoc-summary
@@ -79,6 +87,8 @@ model_list:
       model: os.environ/AISOC_LLM_MODEL_FAST
       api_base: os.environ/AISOC_LLM_API_BASE
       api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      base_model: os.environ/AISOC_LLM_BASE_MODEL_FAST
 
   # ── Reports: analyst-facing write-ups — quality over cost. ────────────────────
   - model_name: aisoc-report
@@ -86,6 +96,8 @@ model_list:
       model: os.environ/AISOC_LLM_MODEL_DEEP
       api_base: os.environ/AISOC_LLM_API_BASE
       api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      base_model: os.environ/AISOC_LLM_BASE_MODEL_DEEP
 
   # ── Natural-language generation: NL→query / NL→detection translation. ─────────
   - model_name: aisoc-nl
@@ -93,6 +105,8 @@ model_list:
       model: os.environ/AISOC_LLM_MODEL_FAST
       api_base: os.environ/AISOC_LLM_API_BASE
       api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      base_model: os.environ/AISOC_LLM_BASE_MODEL_FAST
 
   # Gap-closure Phase 8.3. The hunting agent turns a natural-language
   # hypothesis into a structured plan over a closed field vocabulary. It emits
@@ -104,6 +118,8 @@ model_list:
       model: os.environ/AISOC_LLM_MODEL_FAST
       api_base: os.environ/AISOC_LLM_API_BASE
       api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      base_model: os.environ/AISOC_LLM_BASE_MODEL_FAST
 
   # Parity 2.5. The detection-tuning loop rewrites a Sigma rule from an
   # analyst note and the fields of a misfiring alert. It hardcoded
@@ -116,6 +132,8 @@ model_list:
       model: os.environ/AISOC_LLM_MODEL_FAST
       api_base: os.environ/AISOC_LLM_API_BASE
       api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      base_model: os.environ/AISOC_LLM_BASE_MODEL_FAST
 
   # ── Other backends ────────────────────────────────────────────────────────────
   # The two variables above take any LiteLLM model string, so most swaps need no
@@ -153,6 +171,10 @@ model_list:
 
 # ── Gateway behaviour ─────────────────────────────────────────────────────────
 litellm_settings:
+  # Azure-hosted gateways use their user-assigned managed identity to obtain
+  # short-lived Foundry tokens. LiteLLM refreshes them before expiry; no model
+  # provider API key is present in the Container App configuration.
+  enable_azure_ad_token_refresh: true
   # Silently drop provider-specific params a given backend doesn't support, so
   # the same AiSOC request body works across OpenAI / Ollama / vLLM / Anthropic.
   drop_params: true
