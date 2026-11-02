@@ -42,7 +42,11 @@ vi.mock('swr', () => ({
   },
 }));
 
-import { ApiError } from '@/lib/api';
+import {
+  ApiError,
+  normalizeEntityRiskQueue,
+  normalizeEntityRiskStats,
+} from '@/lib/api';
 import { EntityRiskQueue, describeQueueFailure } from './EntityRiskQueue';
 
 const QUEUE_KEY = JSON.stringify(['entity-risk-queue', false]);
@@ -112,6 +116,47 @@ describe('EntityRiskQueue — first paint', () => {
 
     expect(screen.getByText(/No entities are currently being tracked/i)).toBeTruthy();
     expect(screen.queryByText('not measured')).toBeNull();
+  });
+
+  it('renders the current live Fusion payload without crashing', () => {
+    // Fusion's persisted record vocabulary differs from the first console
+    // contract. These names are copied from the deployed service response.
+    swrData.set(QUEUE_KEY, normalizeEntityRiskQueue({
+      tenant_id: '00000000-0000-0000-0000-000000000001',
+      threshold: 80,
+      entities: [{
+        tenant_id: '00000000-0000-0000-0000-000000000001',
+        entity_type: 'src_ip',
+        entity_value: '203.0.113.7',
+        score: 157.97,
+        alert_count: 4,
+        last_seen: '2026-11-02T06:33:14.188434Z',
+        contributing_alerts: ['alert-1'],
+        severities: { critical: 4 },
+        promoted_at: '2026-11-02T06:33:14.130126Z',
+        contributors: [{
+          alert_id: 'alert-1',
+          severity: 'critical',
+          detection: 'AWS Root Account Console Login',
+          points: 40,
+          at: '2026-11-02T06:24:20.426974Z',
+        }],
+      }],
+    }));
+    swrData.set(STATS_KEY, normalizeEntityRiskStats({
+      tenant_id: '00000000-0000-0000-0000-000000000001',
+      tracked_entities: 4,
+      promoted_entities: 1,
+      score_bands: { critical: 1, high: 2, medium: 1, low: 0 },
+      threshold: 80,
+    }));
+
+    render(<EntityRiskQueue />);
+
+    expect(screen.getByText('203.0.113.7')).toBeTruthy();
+    expect(screen.getByText('4 alerts')).toBeTruthy();
+    expect(screen.getAllByText('Promoted').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/queue unavailable/i)).toBeNull();
   });
 });
 

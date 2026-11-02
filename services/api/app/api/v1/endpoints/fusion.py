@@ -2,11 +2,10 @@
 Fusion gateway / fallback for /api/v1/fusion/*.
 
 The fusion microservice (services/fusion) owns Risk-Based Alerting (RBA) —
-entity rollups, decayed risk scoring, and ML-assisted ranking. In a full
-deployment the web tier proxies /api/v1/fusion/* directly to that service
-(see apps/web/next.config.js → FUSION_HOST). When the fusion service is
-not deployed (e.g. the demo Fly.io stack), the web rewrite still hits the
-core API service via the catch-all, so we expose a thin gateway here that:
+entity rollups, decayed risk scoring, and ML-assisted ranking. The web tier
+always sends /api/v1/fusion/* through this authenticated gateway: browser
+tokens are user credentials, while production fusion accepts only a backend
+service credential and trusted tenant assertion. This gateway:
 
   1. Forwards to the upstream fusion service if FUSION_URL is set in the
      api environment, preserving full functionality.

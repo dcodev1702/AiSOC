@@ -38,11 +38,9 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ARG API_URL=http://api:8000
 ARG AGENTS_URL=http://agents:8084
 ARG REALTIME_URL=http://realtime:4000
-ARG FUSION_URL=""
 ENV API_URL=${API_URL}
 ENV AGENTS_URL=${AGENTS_URL}
 ENV REALTIME_URL=${REALTIME_URL}
-ENV FUSION_URL=${FUSION_URL}
 
 # ─── Build-time public URLs (client-side bundle) ────────────────────────────
 # Anything Next.js exposes to the browser via process.env.NEXT_PUBLIC_* is
@@ -151,11 +149,9 @@ COPY --from=builder --chown=nextjs:nodejs /app ./
 ARG API_URL=http://api:8000
 ARG AGENTS_URL=http://agents:8084
 ARG REALTIME_URL=http://realtime:4000
-ARG FUSION_URL=""
 ENV API_URL=${API_URL}
 ENV AGENTS_URL=${AGENTS_URL}
 ENV REALTIME_URL=${REALTIME_URL}
-ENV FUSION_URL=${FUSION_URL}
 
 USER nextjs
 EXPOSE 3000

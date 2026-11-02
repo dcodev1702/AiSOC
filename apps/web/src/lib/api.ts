@@ -2113,8 +2113,9 @@ export const queueApi = {
 // Once an entity crosses ``rba_promotion_threshold`` it becomes the primary
 // unit of triage in the UI — so the analyst opens "the user fox.beach" with
 // 47 contributing alerts attached, not 47 separate alert rows. The endpoints
-// live on the fusion service (port 8082) and are proxied same-origin via
-// next.config.js → ``/api/v1/fusion/*``.
+// live on the fusion service and are reached through the authenticated core
+// API gateway at ``/api/v1/fusion/*``. The gateway exchanges the analyst's
+// user token for the service credential fusion requires.
 
 export type EntityType = "user" | "host" | "ip" | "domain";
 
@@ -2148,7 +2149,7 @@ export interface EntityRiskRecord {
   /** ISO-8601 timestamp of the last contributing alert. */
   last_seen: string;
   /** ISO-8601 timestamp the entity first picked up any risk. */
-  first_seen: string;
+  first_seen?: string;
   /** Top contributing alerts, newest first, capped to ~25. */
   contributions: EntityRiskContribution[];
   /** Count by severity over the decay window — drives the queue badge. */
@@ -2179,17 +2180,135 @@ export interface EntityRiskStats {
     low: number;
   };
   /** Total alerts contributing across all entities in the window. */
-  alert_count: number;
+  alert_count?: number;
   /** Convenience: alert-to-incident ratio observed in the current window. */
   alert_to_incident_ratio?: number | null;
 }
 
 /**
- * Path namespace served by the fusion service. Goes through Next.js
- * rewrites (`/api/v1/fusion/*` → ``${FUSION_HOST}/*``) so the bundle
- * stays same-origin.
+ * Path namespace served by the core API's authenticated fusion gateway.
+ * Next.js sends this through the generic API rewrite; the browser must never
+ * be routed directly to fusion because it does not hold a service credential.
  */
 const FUSION_PATH = "/api/v1/fusion";
+
+type JsonObject = Record<string, unknown>;
+
+function jsonObject(value: unknown, label: string): JsonObject {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as JsonObject;
+  }
+  throw new ApiError(`Invalid ${label} response`, 502, "malformed upstream payload");
+}
+
+function finiteNumber(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function riskEntityType(value: unknown): EntityType {
+  if (value === "src_ip" || value === "ip") return "ip";
+  if (value === "host" || value === "domain" || value === "user") return value;
+  return "user";
+}
+
+function severityCounts(value: unknown): Record<AlertSeverity, number> {
+  const source = value && typeof value === "object" && !Array.isArray(value)
+    ? value as JsonObject
+    : {};
+  return {
+    critical: finiteNumber(source.critical),
+    high: finiteNumber(source.high),
+    medium: finiteNumber(source.medium),
+    low: finiteNumber(source.low),
+    info: finiteNumber(source.info),
+  };
+}
+
+/** Adapt both the current Fusion wire format and the older console contract. */
+export function normalizeEntityRiskRecord(value: unknown, queueThreshold: number): EntityRiskRecord {
+  const record = jsonObject(value, "entity-risk record");
+  const score = finiteNumber(record.score);
+  const threshold = finiteNumber(record.threshold, queueThreshold);
+  const lastSeen = typeof record.last_seen === "string" ? record.last_seen : new Date(0).toISOString();
+  const rawContributions = Array.isArray(record.contributions)
+    ? record.contributions
+    : Array.isArray(record.contributors)
+      ? record.contributors
+      : [];
+
+  return {
+    tenant_id: typeof record.tenant_id === "string" ? record.tenant_id : "",
+    entity_type: riskEntityType(record.entity_type),
+    entity_value: typeof record.entity_value === "string" ? record.entity_value : "unknown",
+    score,
+    display_score: finiteNumber(record.display_score, Math.round(score)),
+    threshold,
+    promoted: typeof record.promoted === "boolean" ? record.promoted : typeof record.promoted_at === "string",
+    promoted_incident_id: typeof record.promoted_incident_id === "string" ? record.promoted_incident_id : null,
+    last_seen: lastSeen,
+    first_seen: typeof record.first_seen === "string" ? record.first_seen : undefined,
+    contributions: rawContributions.map((item) => {
+      const contribution = jsonObject(item, "entity-risk contribution");
+      return {
+        alert_id: typeof contribution.alert_id === "string" ? contribution.alert_id : "unknown",
+        severity: (typeof contribution.severity === "string" ? contribution.severity : "info") as AlertSeverity,
+        raw_points: finiteNumber(contribution.raw_points, finiteNumber(contribution.points)),
+        observed_at:
+          typeof contribution.observed_at === "string"
+            ? contribution.observed_at
+            : typeof contribution.at === "string"
+              ? contribution.at
+              : lastSeen,
+        title:
+          typeof contribution.title === "string"
+            ? contribution.title
+            : typeof contribution.detection === "string"
+              ? contribution.detection
+              : null,
+        source: typeof contribution.source === "string" ? contribution.source : null,
+      };
+    }),
+    severity_histogram: severityCounts(record.severity_histogram ?? record.severities),
+    alert_count: finiteNumber(record.alert_count),
+  };
+}
+
+export function normalizeEntityRiskQueue(value: unknown): EntityRiskQueueResponse {
+  const payload = jsonObject(value, "entity-risk queue");
+  const threshold = finiteNumber(payload.threshold, 100);
+  const entities = Array.isArray(payload.entities) ? payload.entities : [];
+  return {
+    tenant_id: typeof payload.tenant_id === "string" ? payload.tenant_id : "",
+    threshold,
+    entities: entities.map((entity) => normalizeEntityRiskRecord(entity, threshold)),
+  };
+}
+
+export function normalizeEntityRiskStats(value: unknown): EntityRiskStats {
+  const payload = jsonObject(value, "entity-risk stats");
+  const rawBands = payload.bands ?? payload.score_bands;
+  const bands = severityCounts(rawBands);
+  return {
+    tenant_id: typeof payload.tenant_id === "string" ? payload.tenant_id : "",
+    threshold: finiteNumber(payload.threshold, 100),
+    total: finiteNumber(payload.total, finiteNumber(payload.tracked_entities)),
+    promoted: finiteNumber(payload.promoted, finiteNumber(payload.promoted_entities)),
+    bands: {
+      critical: bands.critical,
+      high: bands.high,
+      medium: bands.medium,
+      low: bands.low,
+    },
+    alert_count:
+      typeof payload.alert_count === "number"
+        ? finiteNumber(payload.alert_count)
+        : typeof payload.alerts_total === "number"
+          ? finiteNumber(payload.alerts_total)
+          : undefined,
+    alert_to_incident_ratio:
+      typeof payload.alert_to_incident_ratio === "number" ? payload.alert_to_incident_ratio : null,
+  };
+}
 
 // The tenant is no longer sent by default. It used to be, resolved from the
 // build-time `NEXT_PUBLIC_TENANT_ID` when nothing better was cached — and the
@@ -2209,27 +2328,27 @@ export const entityRiskApi = {
       promotedOnly?: boolean;
     } = {}
   ) =>
-    request<EntityRiskQueueResponse>(`${FUSION_PATH}/entity-risk/queue`, {
+    request<unknown>(`${FUSION_PATH}/entity-risk/queue`, {
       params: {
         tenant_id: params.tenantId,
         limit: params.limit ?? 25,
         promoted_only: params.promotedOnly ? "true" : undefined,
       },
-    }),
+    }).then(normalizeEntityRiskQueue),
 
   /** Tenant-scoped queue stats for dashboards (banding, totals, threshold). */
   stats: (tenantId?: string) =>
-    request<EntityRiskStats>(`${FUSION_PATH}/entity-risk/stats`, {
+    request<unknown>(`${FUSION_PATH}/entity-risk/stats`, {
       params: { tenant_id: tenantId },
-    }),
+    }).then(normalizeEntityRiskStats),
 
   /** Full risk record for a single entity (drawer detail). */
   get: (entityType: EntityType, entityValue: string, tenantId?: string) => {
     const pathType = entityType === "ip" ? "src_ip" : entityType;
-    return request<EntityRiskRecord>(
+    return request<unknown>(
       `${FUSION_PATH}/entity-risk/${pathType}/${encodeURIComponent(entityValue)}`,
       { params: { tenant_id: tenantId } }
-    );
+    ).then((record) => normalizeEntityRiskRecord(record, 100));
   },
 };
 

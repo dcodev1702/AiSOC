@@ -497,10 +497,6 @@ resource "azurerm_container_app" "web" {
         value = local.internal_realtime_url
       }
       env {
-        name  = "FUSION_URL"
-        value = local.internal_fusion_url
-      }
-      env {
         name  = "NODE_ENV"
         value = "production"
       }

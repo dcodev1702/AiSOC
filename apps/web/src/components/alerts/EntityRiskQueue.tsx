@@ -437,10 +437,9 @@ function EntityDetailDrawer({
                 {record.alert_count}
               </p>
               <p className="text-[10px] text-gray-500 mt-0.5" suppressHydrationWarning>
-                first seen{' '}
-                {formatDistanceToNow(new Date(record.first_seen), {
-                  addSuffix: true,
-                })}
+                {record.first_seen
+                  ? `first seen ${formatDistanceToNow(new Date(record.first_seen), { addSuffix: true })}`
+                  : 'first seen not recorded'}
               </p>
             </div>
           </div>

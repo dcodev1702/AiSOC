@@ -31,15 +31,6 @@ try {
 const REALTIME_HOST = process.env.REALTIME_URL || 'http://localhost:8086';
 const API_HOST = process.env.API_URL || 'http://localhost:8000';
 const AGENTS_HOST = process.env.AGENTS_URL || 'http://localhost:8001';
-// Fusion service exposes /entity-risk/*, /ml/*, /metrics, /health at root.
-// We surface those to the browser under the same-origin namespace
-// /api/v1/fusion/* so the bundle stays host-agnostic.
-//
-// When FUSION_URL is unset (e.g. the demo Fly.io stack with no fusion
-// deployment), the rewrite is omitted entirely so /api/v1/fusion/* falls
-// through to the core API catch-all, which exposes a graceful fusion
-// gateway (services/api/app/api/v1/endpoints/fusion.py).
-const FUSION_HOST = process.env.FUSION_URL || '';
 const ENRICHMENT_HOST = process.env.ENRICHMENT_URL || 'http://enrichment:8082';
 const OSQUERY_TLS_HOST = process.env.OSQUERY_TLS_URL || 'http://localhost:8090';
 // Both services are `extras`-profile, so the default points at the published
@@ -270,23 +261,12 @@ const nextConfig = {
         source: '/api/v1/enrichment/bulk',
         destination: `${ENRICHMENT_HOST}/enrich/bulk`,
       },
-      // Fusion service exposes the Risk-Based Alerting (entity rollup) queue
-      // and ML scoring endpoints at its own root (no /api/v1 prefix on the
-      // service side). Proxy /api/v1/fusion/:path* → fusion's /:path* so the
-      // browser only ever sees same-origin URLs.
-      //
-      // Only emit the fusion-specific rewrite when FUSION_URL is configured.
-      // Without it, /api/v1/fusion/* falls through to the core API, which
-      // now hosts a fusion gateway that returns graceful empty payloads
-      // when no upstream fusion is reachable.
-      ...(FUSION_HOST
-        ? [
-            {
-              source: '/api/v1/fusion/:path*',
-              destination: `${FUSION_HOST}/:path*`,
-            },
-          ]
-        : []),
+      // Fusion deliberately falls through to the core API gateway below.
+      // The browser owns a user JWT, while the production fusion service
+      // accepts only a backend service credential plus a trusted tenant
+      // assertion. The authenticated gateway performs that exchange and
+      // enforces the caller's tenant scope. A direct web → fusion rewrite
+      // bypasses that boundary and produces a 401 for every analyst.
       // Catch-all for the core API.
       {
         source: '/api/v1/:path*',
