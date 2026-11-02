@@ -156,6 +156,7 @@ The PoC deliberately uses one small, evictable compute node rather than a
 premium managed cluster:
 
 - a `Standard_E2as_v5` Spot VM in an isolated, peered VNet;
+- a private-only VM NIC with subnet NAT for outbound updates and image pulls;
 - Standard SSD LRS for both the OS and the 512 GiB data disk;
 - ClickHouse for 365-day hot search (with a 400-day TTL safety ceiling);
 - Neo4j Community for entity and relationship pivots; and
@@ -272,9 +273,10 @@ extensions required by the schema.
 ## Costs
 
 Defaults favor a small deployment, but Azure Managed Redis, always-on pipeline
-replicas, retained Event Hubs data, the Standard SSD, and ADLS capacity still
-incur cost. The ClickHouse/Neo4j host is Spot and can be evicted. Check the
-Azure calculator for the selected region and current pricing. For a
+replicas, retained Event Hubs data, the Standard SSD, ADLS capacity, and the
+NAT Gateway protecting the private-only lake VM still incur cost. The
+ClickHouse/Neo4j host is Spot and can be evicted. Check the Azure calculator
+for the selected region and current pricing. For a
 cost-sensitive sandbox, set
 `postgres_sku = "B_Standard_B1ms"`, `managed_redis_sku = "Balanced_B0"`, and
 `managed_redis_high_availability_enabled = false` in `terraform.tfvars`.

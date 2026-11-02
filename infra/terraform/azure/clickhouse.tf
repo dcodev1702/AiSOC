@@ -78,9 +78,9 @@ resource "azurerm_subnet_network_security_group_association" "clickhouse" {
   network_security_group_id = azurerm_network_security_group.clickhouse.id
 }
 
-# A direct Standard public IP supplies outbound package/image access without
-# the fixed monthly cost of a NAT Gateway.  No Internet-originated inbound rule
-# exists in the NSG; administration uses Azure Run Command or a future Bastion.
+# The VM NIC is private-only. A subnet NAT Gateway retains outbound package and
+# container-image access without assigning an Internet-routable address to the
+# host. Administration remains on Azure Run Command or a future Bastion.
 resource "azurerm_public_ip" "clickhouse_outbound" {
   name                = "${var.name_prefix}-clickhouse-outbound"
   location            = var.clickhouse_location
@@ -88,6 +88,25 @@ resource "azurerm_public_ip" "clickhouse_outbound" {
   allocation_method   = "Static"
   sku                 = "Standard"
   tags                = var.tags
+}
+
+resource "azurerm_nat_gateway" "clickhouse" {
+  name                    = "${var.name_prefix}-clickhouse-nat"
+  location                = var.clickhouse_location
+  resource_group_name     = azurerm_resource_group.main.name
+  sku_name                = "Standard"
+  idle_timeout_in_minutes = 10
+  tags                    = var.tags
+}
+
+resource "azurerm_nat_gateway_public_ip_association" "clickhouse" {
+  nat_gateway_id       = azurerm_nat_gateway.clickhouse.id
+  public_ip_address_id = azurerm_public_ip.clickhouse_outbound.id
+}
+
+resource "azurerm_subnet_nat_gateway_association" "clickhouse" {
+  subnet_id      = azurerm_subnet.clickhouse.id
+  nat_gateway_id = azurerm_nat_gateway.clickhouse.id
 }
 
 resource "azurerm_network_interface" "clickhouse" {
@@ -100,8 +119,9 @@ resource "azurerm_network_interface" "clickhouse" {
     name                          = "private"
     subnet_id                     = azurerm_subnet.clickhouse.id
     private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = azurerm_public_ip.clickhouse_outbound.id
   }
+
+  depends_on = [azurerm_subnet_nat_gateway_association.clickhouse]
 }
 
 # ─── Spot ClickHouse node ───────────────────────────────────────────────────
