@@ -261,6 +261,14 @@ resource "azurerm_container_app" "api" {
         value = "${local.internal_model_gateway_url}/v1"
       }
       env {
+        name  = "AISOC_INGEST_HEALTH_URL"
+        value = "https://${azurerm_container_app.ingest.ingress[0].fqdn}/readyz"
+      }
+      env {
+        name  = "AISOC_INGEST_HEALTH_CACHE_SECONDS"
+        value = "60"
+      }
+      env {
         name  = "AISOC_CONNECTORS_IDENTITY_NAME"
         value = azurerm_user_assigned_identity.connectors.name
       }
@@ -683,6 +691,30 @@ resource "azurerm_container_app" "ingest" {
       env {
         name        = "JWT_SECRET"
         secret_name = "jwt-secret"
+      }
+
+      # Liveness only asks whether the process is serving. Readiness actively
+      # checks the managed-identity Event Hubs/Kafka publisher, once per minute.
+      # Keeping those separate avoids restart loops during a broker outage.
+      liveness_probe {
+        transport               = "HTTP"
+        port                    = 8080
+        path                    = "/livez"
+        initial_delay           = 10
+        interval_seconds        = 60
+        timeout                 = 5
+        failure_count_threshold = 3
+      }
+
+      readiness_probe {
+        transport               = "HTTP"
+        port                    = 8080
+        path                    = "/readyz"
+        initial_delay           = 10
+        interval_seconds        = 60
+        timeout                 = 5
+        failure_count_threshold = 3
+        success_count_threshold = 1
       }
     }
   }

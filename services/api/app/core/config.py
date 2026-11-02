@@ -844,6 +844,13 @@ class Settings(BaseSettings):
     # 5-minute poll cadence documented in services/connectors.
     AISOC_PIPELINE_STALE_WARN_SECONDS: int = 600  # 10 minutes
     AISOC_PIPELINE_STALE_DOWN_SECONDS: int = 1800  # 30 minutes
+    # Optional active readiness signal for the ingest front door. The API
+    # caches this dependency check so every dashboard viewer does not probe
+    # Event Hubs independently. When unset, pipeline health preserves the
+    # connector/event-freshness fallback used by self-hosted deployments.
+    AISOC_INGEST_HEALTH_URL: str = ""
+    AISOC_INGEST_HEALTH_CACHE_SECONDS: int = 60
+    AISOC_INGEST_HEALTH_TIMEOUT_SECONDS: float = 4.0
 
     # ------------------------------------------------------------------
     # Air-gapped operating mode (Tier 3.1 — air-gapped certification).

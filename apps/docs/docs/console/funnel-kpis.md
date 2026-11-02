@@ -94,7 +94,10 @@ Each stage card shows:
 - **Error rate** — fraction of failed runs in the window. Sourced from `Connector.last_error_at` / `last_success_at` counters and aggregated.
 - **Status** — `unknown | green | yellow | red`, derived from the same `compute_freshness` service that powers the existing connector health page (`services/api/app/services/connector_freshness.py`) plus per-stage staleness thresholds. The top-of-rail badge reports the worst stage status.
 
-`refreshInterval` is 30 s for pipeline health and 60 s for the funnel — fast enough to spot a fuse-stage backlog spike, slow enough not to pound the API.
+`refreshInterval` is 30 s for pipeline health and 60 s for the funnel. The
+Azure ingest readiness result is cached server-side for 60 s, so multiple
+dashboard viewers share one active Event Hubs/Kafka check per API process
+rather than probing the broker independently.
 
 ## Endpoints
 
@@ -202,8 +205,10 @@ Configuration lives in `services/api/app/core/config.py`:
 | Setting | Default | Purpose |
 |---|---|---|
 | `AISOC_FUNNEL_MITRE_TOTAL` | `201` | Denominator for MITRE coverage. Set to your active framework's technique count (e.g. ATT&CK Enterprise v15 = 201). The numerator is computed live from rules with at least one alert in window. |
-| `AISOC_PIPELINE_STALE_WARN_SECONDS` | `300` | Per-stage staleness threshold below which a stage stays `green`. Above this, the stage flips to `yellow`. |
-| `AISOC_PIPELINE_STALE_DOWN_SECONDS` | `900` | Per-stage staleness threshold above which a stage flips to `red`. |
+| `AISOC_PIPELINE_STALE_WARN_SECONDS` | `600` | Per-stage staleness threshold below which a stage stays `green`. Above this, the stage flips to `yellow`. |
+| `AISOC_PIPELINE_STALE_DOWN_SECONDS` | `1800` | Per-stage staleness threshold above which a stage flips to `red`. |
+| `AISOC_INGEST_HEALTH_URL` | empty | Ingest `/readyz` URL. A successful response must explicitly report `kafka: true` before the ingest stage turns green. |
+| `AISOC_INGEST_HEALTH_CACHE_SECONDS` | `60` | Minimum interval between active ingest readiness checks per API process. |
 
 All three are env-driven and tenant-uniform (deliberately — the picture of "is my pipeline healthy" should not vary per tenant).
 

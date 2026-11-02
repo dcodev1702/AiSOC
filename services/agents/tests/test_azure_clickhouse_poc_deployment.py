@@ -126,3 +126,13 @@ def test_operational_controls_are_codified() -> None:
     assert 'resource "azurerm_monitor_metric_alert" "eventhub_server_errors"' in monitoring
     assert 'resource "azurerm_monitor_metric_alert" "clickhouse_vm_availability"' in monitoring
     assert 'resource "azurerm_private_endpoint" "key_vault"' in main
+
+
+def test_ingest_readiness_is_checked_once_per_minute() -> None:
+    apps = _read("container_apps.tf")
+
+    assert 'name  = "AISOC_INGEST_HEALTH_URL"' in apps
+    assert 'value = "60"' in apps
+    assert 'path                    = "/livez"' in apps
+    assert 'path                    = "/readyz"' in apps
+    assert apps.count("interval_seconds        = 60") >= 2

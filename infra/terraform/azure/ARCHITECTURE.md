@@ -140,10 +140,13 @@ system-assigned identity only for its ADLS backup boundary.
 3. Fusion promotes security findings, runs detections, correlates alerts, and
    persists both PostgreSQL state and ClickHouse raw-event projections. Ingest
    also writes extracted entities and relationships to Neo4j.
-4. The dashboard marks the shared ingest stage healthy from recent persisted
-   flow, then falls back to scheduled-connector freshness when no event has
-   crossed the pipeline. Stale connectors still appear in backlog/error detail
-   and on the connector-health page.
+4. Azure Container Apps calls ingest `/readyz` every 60 seconds. That endpoint
+   actively checks the managed-identity Event Hubs/Kafka publisher; `/livez`
+   remains process-only so a broker outage does not create a restart loop. The
+   API shares the same readiness result with the dashboard on a 60-second cache.
+   Recent persisted flow and scheduled-connector freshness remain fallbacks for
+   self-hosted deployments without the probe. Stale connectors still appear in
+   backlog/error detail and on the connector-health page.
 
 The LAW is not required to forward any tables to Event Hubs for this design.
 Event Hubs is AiSOC's internal seven-day recovery buffer, not its evidence

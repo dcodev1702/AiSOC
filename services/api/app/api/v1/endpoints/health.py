@@ -22,16 +22,17 @@ read absence as "all good".
 Per-stage definitions
 ---------------------
 
-* **ingest** — events arriving from connectors. ``status`` uses recent
-  downstream alert creation as positive proof that the shared ingest path is
-  flowing, then falls back to the worst connector freshness verdict when no
-  event has traversed the pipeline recently. ``backlog`` is the number of
-  enabled connectors that haven't fired an event within 2× their per-category
-  cadence (the ``red`` band in ``connector_freshness``). ``error_rate`` is
-  ``unhealthy / enabled`` from ``Connector.health_status``. Per-connector
-  degradation remains visible in those two fields and on the connector-health
-  page; a stale connector alone no longer paints the entire ingest service red
-  while other events are demonstrably being accepted and persisted.
+* **ingest** — events arriving from connectors. ``status`` first uses a cached
+  active readiness check that proves the ingest front door can reach its
+  Event Hubs/Kafka broker. When that probe is not configured, recent downstream
+  alert creation is positive flow evidence and connector freshness is the idle
+  fallback. ``backlog`` is the number of enabled connectors that haven't fired
+  an event within 2× their per-category cadence (the ``red`` band in
+  ``connector_freshness``). ``error_rate`` is ``unhealthy / enabled`` from
+  ``Connector.health_status``. Per-connector degradation remains visible in
+  those two fields and on the connector-health page; a stale connector alone no
+  longer paints the entire ingest service red while the broker is demonstrably
+  reachable or other events are being accepted and persisted.
   ``p95_latency_ms`` is left at 0 — we don't carry a source-side
   timestamp on the wire to compute true ingest lag.
 
@@ -80,9 +81,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
+import httpx
 from fastapi import APIRouter, Depends, Response, status
 from redis.asyncio import from_url as redis_from_url
 from sqlalchemy import and_, func, select, text
@@ -114,6 +117,12 @@ router = APIRouter(prefix="/health", tags=["health"])
 # of data. Matches the convention enforced by ``connector_freshness``.
 _STATUS_RANK: dict[str, int] = {"green": 0, "unknown": 1, "yellow": 2, "red": 3}
 
+# The dashboard polls every 30 seconds, but one active dependency check per
+# API process per minute is sufficient. Keying by URL keeps tests and dynamic
+# deployments from reusing a result produced for another ingest endpoint.
+_INGEST_READINESS_CACHE: dict[str, tuple[float, str]] = {}
+_INGEST_READINESS_LOCK = asyncio.Lock()
+
 
 def _status_from_latency(
     *,
@@ -142,6 +151,60 @@ def _worst_status(statuses: list[str]) -> str:
     return max(statuses, key=lambda s: _STATUS_RANK.get(s, 1))
 
 
+async def _fetch_ingest_readiness(url: str, *, timeout_seconds: float) -> str:
+    """Actively verify that ingest can reach its Event Hubs/Kafka broker.
+
+    The ingest service deliberately separates liveness from readiness:
+    ``/livez`` only proves the process is running, while ``/readyz`` performs
+    the broker check. A 200 is green only when the response explicitly says
+    ``kafka: true``. An explicit broker failure is red; a monitor/transport
+    failure is yellow because it proves lost observability, not necessarily a
+    stopped data plane.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=max(1.0, timeout_seconds)) as client:
+            response = await client.get(url)
+    except httpx.HTTPError:
+        logger.warning("ingest readiness probe could not reach %s", url, exc_info=True)
+        return "yellow"
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+
+    if response.is_success and payload.get("kafka") is True:
+        return "green"
+    if response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE or payload.get("kafka") is False:
+        return "red"
+    return "yellow"
+
+
+async def _get_ingest_readiness() -> str:
+    """Return the at-most-60-second-old readiness verdict for ingest."""
+    url = str(getattr(settings, "AISOC_INGEST_HEALTH_URL", "") or "").strip()
+    if not url:
+        return "unknown"
+
+    cache_seconds = max(1, int(getattr(settings, "AISOC_INGEST_HEALTH_CACHE_SECONDS", 60) or 60))
+    now = time.monotonic()
+    cached = _INGEST_READINESS_CACHE.get(url)
+    if cached is not None and now < cached[0]:
+        return cached[1]
+
+    async with _INGEST_READINESS_LOCK:
+        now = time.monotonic()
+        cached = _INGEST_READINESS_CACHE.get(url)
+        if cached is not None and now < cached[0]:
+            return cached[1]
+        verdict = await _fetch_ingest_readiness(
+            url,
+            timeout_seconds=float(getattr(settings, "AISOC_INGEST_HEALTH_TIMEOUT_SECONDS", 4.0) or 4.0),
+        )
+        _INGEST_READINESS_CACHE[url] = (time.monotonic() + cache_seconds, verdict)
+        return verdict
+
+
 # Postgres ``percentile_cont(p)`` returns ``double precision``. SQLAlchemy
 # exposes it via the ``func`` namespace; we wrap the (admittedly verbose)
 # ``WITHIN GROUP (ORDER BY ...)`` expression here so the per-stage helpers
@@ -164,6 +227,7 @@ async def _ingest_stage(
     *,
     now: datetime,
     recent_window_seconds: int = 600,
+    readiness_status: str = "unknown",
 ) -> PipelineStage:
     """Build the ``ingest`` row from connector freshness aggregates.
 
@@ -201,13 +265,17 @@ async def _ingest_stage(
     enabled = [r for r in rows if r.is_enabled]
     if not enabled:
         # Direct/Event-Hubs producers may be active without a Connector row.
-        # Otherwise a fresh tenant remains unknown rather than falsely green.
+        # An active readiness check proves an idle front door is usable; when
+        # it is not configured, preserve the event-freshness fallback.
+        status_without_connectors = readiness_status
+        if readiness_status == "unknown":
+            status_without_connectors = "green" if recent_flow else "unknown"
         return PipelineStage(
             stage="ingest",
             backlog=0,
             p95_latency_ms=0.0,
             error_rate=0.0,
-            status="green" if recent_flow else "unknown",
+            status=status_without_connectors,
             unmeasured=["backlog", "p95_latency_ms", "error_rate"],
         )
 
@@ -234,7 +302,15 @@ async def _ingest_stage(
 
     error_rate = round(unhealthy / len(enabled), 4) if enabled else 0.0
     connector_status = _worst_status(statuses)
-    if recent_flow:
+    if readiness_status == "red":
+        # A current broker failure always beats historical flow evidence.
+        stage_status = "red"
+    elif readiness_status == "yellow":
+        stage_status = "yellow"
+    elif readiness_status == "green":
+        # The front door and broker are usable even while the tenant is idle.
+        stage_status = "yellow" if unhealthy else "green"
+    elif recent_flow:
         # Current persisted flow proves that the shared ingest path is up. A
         # connector that is explicitly unhealthy still warrants a degraded
         # (yellow) stage, while stale connector detail remains in backlog.
@@ -519,12 +595,15 @@ async def get_pipeline_health(
     warn_seconds = int(getattr(settings, "AISOC_PIPELINE_STALE_WARN_SECONDS", 600) or 600)
     down_seconds = int(getattr(settings, "AISOC_PIPELINE_STALE_DOWN_SECONDS", 1800) or 1800)
 
+    ingest_readiness = await _get_ingest_readiness()
+
     stages = [
         await _ingest_stage(
             db,
             user.tenant_id,
             now=now,
             recent_window_seconds=warn_seconds,
+            readiness_status=ingest_readiness,
         ),
         await _normalize_stage(
             db,

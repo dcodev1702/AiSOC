@@ -134,10 +134,12 @@ specific use case; do not duplicate the entire workspace by default.
 The connector records the last source event it successfully submitted as
 `connectors.last_event_at`, while `events_ingested` is a cumulative accepted
 counter. Direct ingest and Event Hubs replay have no connector row, so the
-Operations Funnel first treats recent persisted alert flow as positive proof
-that the shared ingest path is alive, then falls back to connector freshness.
-Stale connectors still remain visible in the backlog and connector-health
-views.
+Operations Funnel uses the ingest service's `/readyz` result, cached for 60
+seconds, as the primary status signal. That endpoint actively verifies the
+managed-identity Kafka connection to Event Hubs. Recent persisted flow and
+connector freshness remain fallbacks for deployments that do not configure the
+active probe. Stale connectors still remain visible in the backlog and
+connector-health views.
 
 Event Hubs is the private application transport, not the analytical archive.
 The deployed test stack persists application state in PostgreSQL, raw event

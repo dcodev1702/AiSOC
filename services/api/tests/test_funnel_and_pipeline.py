@@ -32,6 +32,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -697,6 +698,107 @@ class TestIngestStage:
 
         assert stage.status == "yellow"
         assert stage.error_rate == 1.0
+
+    @pytest.mark.asyncio
+    async def test_active_readiness_makes_an_idle_ingest_front_door_green(self) -> None:
+        from app.api.v1.endpoints.health import _ingest_stage
+
+        db = MagicMock()
+        db.scalar = AsyncMock(return_value=None)
+        db.execute = AsyncMock(return_value=_execute_result_all([]))
+
+        stage = await _ingest_stage(
+            db,
+            uuid.uuid4(),
+            now=datetime.now(UTC),
+            readiness_status="green",
+        )
+
+        assert stage.status == "green"
+
+    @pytest.mark.asyncio
+    async def test_broker_readiness_failure_overrides_recent_flow(self) -> None:
+        from app.api.v1.endpoints.health import _ingest_stage
+
+        now = datetime.now(UTC)
+        db = MagicMock()
+        db.scalar = AsyncMock(return_value=now - timedelta(seconds=5))
+        db.execute = AsyncMock(
+            return_value=_execute_result_all(
+                [_connector_row(category="siem", last_event_at=now - timedelta(seconds=5))]
+            )
+        )
+
+        stage = await _ingest_stage(
+            db,
+            uuid.uuid4(),
+            now=now,
+            readiness_status="red",
+        )
+
+        assert stage.status == "red"
+
+
+class TestIngestReadinessProbe:
+    """The active probe reports broker readiness and is rate-limited."""
+
+    @staticmethod
+    def _client_returning(response):
+        client = MagicMock()
+        client.get = AsyncMock(return_value=response)
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=client)
+        context.__aexit__ = AsyncMock(return_value=None)
+        return context
+
+    @pytest.mark.asyncio
+    async def test_requires_explicit_kafka_reachability_for_green(self) -> None:
+        from app.api.v1.endpoints.health import _fetch_ingest_readiness
+
+        response = httpx.Response(200, json={"status": "ready_degraded", "kafka": True})
+        with patch(
+            "app.api.v1.endpoints.health.httpx.AsyncClient",
+            return_value=self._client_returning(response),
+        ):
+            verdict = await _fetch_ingest_readiness("https://ingest.test/readyz", timeout_seconds=4)
+
+        assert verdict == "green"
+
+    @pytest.mark.asyncio
+    async def test_explicit_broker_failure_is_red(self) -> None:
+        from app.api.v1.endpoints.health import _fetch_ingest_readiness
+
+        response = httpx.Response(503, json={"status": "not_ready", "kafka": False})
+        with patch(
+            "app.api.v1.endpoints.health.httpx.AsyncClient",
+            return_value=self._client_returning(response),
+        ):
+            verdict = await _fetch_ingest_readiness("https://ingest.test/readyz", timeout_seconds=4)
+
+        assert verdict == "red"
+
+    @pytest.mark.asyncio
+    async def test_dashboard_requests_share_the_60_second_probe_result(self) -> None:
+        from app.api.v1.endpoints import health
+
+        health._INGEST_READINESS_CACHE.clear()
+        fetch = AsyncMock(return_value="green")
+        fake_settings = SimpleNamespace(
+            AISOC_INGEST_HEALTH_URL="https://ingest.test/readyz",
+            AISOC_INGEST_HEALTH_CACHE_SECONDS=60,
+            AISOC_INGEST_HEALTH_TIMEOUT_SECONDS=4.0,
+        )
+        try:
+            with (
+                patch.object(health, "settings", fake_settings),
+                patch.object(health, "_fetch_ingest_readiness", fetch),
+            ):
+                assert await health._get_ingest_readiness() == "green"
+                assert await health._get_ingest_readiness() == "green"
+        finally:
+            health._INGEST_READINESS_CACHE.clear()
+
+        fetch.assert_awaited_once()
 
 
 class TestNormalizeStage:
