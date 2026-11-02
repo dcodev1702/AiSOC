@@ -204,6 +204,23 @@ resource "azurerm_key_vault_secret" "database_asyncpg_url" {
   depends_on = [azurerm_role_assignment.deployer_secrets_officer]
 }
 
+# Go pgx consumes a PostgreSQL URL directly; it does not understand
+# SQLAlchemy's `postgresql+asyncpg` driver marker.
+resource "azurerm_key_vault_secret" "database_pgx_url" {
+  name = "database-pgx-url"
+  value = format(
+    "postgresql://%s:%s@%s:5432/%s?sslmode=require",
+    "aisoc_app",
+    urlencode(random_password.postgres_app.result),
+    azurerm_postgresql_flexible_server.main.fqdn,
+    var.postgres_db_name,
+  )
+  key_vault_id = azurerm_key_vault.main.id
+  tags         = var.tags
+
+  depends_on = [azurerm_role_assignment.deployer_secrets_officer]
+}
+
 resource "azurerm_key_vault_secret" "database_migration_url" {
   name = "database-migration-url"
   value = format(

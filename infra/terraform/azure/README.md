@@ -183,8 +183,10 @@ The migration owner is deliberately separate from the runtime login. The API
 reads `database-migration-url` only during fail-fast startup migrations, then
 serves requests with the lower-privilege `database-url`. Connectors and actions
 use `database-asyncpg-url`, which avoids a libpq-only query parameter rejected
-by their direct asyncpg callers. PostgreSQL enforces encrypted transport for
-all three paths, and Terraform allow-lists the `uuid-ossp` and `pgcrypto`
+by their direct asyncpg callers. Ingest uses `database-pgx-url`, which retains
+`sslmode=require` without SQLAlchemy's driver marker and enables fail-closed
+tenant validation. PostgreSQL enforces encrypted transport for all paths, and
+Terraform allow-lists the `uuid-ossp` and `pgcrypto`
 extensions required by the schema.
 
 ## Costs

@@ -436,6 +436,11 @@ resource "azurerm_container_app" "ingest" {
     key_vault_secret_id = azurerm_key_vault_secret.postgres_password.versionless_id
   }
   secret {
+    name                = "database-dsn"
+    identity            = azurerm_user_assigned_identity.pipeline.id
+    key_vault_secret_id = azurerm_key_vault_secret.database_pgx_url.versionless_id
+  }
+  secret {
     name                = "secret-key"
     identity            = azurerm_user_assigned_identity.pipeline.id
     key_vault_secret_id = azurerm_key_vault_secret.secret_key.versionless_id
@@ -528,6 +533,10 @@ resource "azurerm_container_app" "ingest" {
       env {
         name  = "POSTGRES_SSLMODE"
         value = "require"
+      }
+      env {
+        name        = "DATABASE_DSN"
+        secret_name = "database-dsn"
       }
       env {
         name  = "REDIS_HOST"
